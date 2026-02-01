@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase/server';
 import { updateRetellAgent, deleteRetellAgent, getRetellAgent } from '@/lib/retell/client';
 import { requireAuth } from '@/lib/supabase/auth';
+import { generateTools } from '@/lib/agent-templates';
 
-// GET /api/agents/[id] - Get a specific agent
+// GET /api/agents/[id] - Get single agent
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
@@ -12,38 +13,26 @@ export async function GET(
     const user = await requireAuth();
     const supabase = await createServerClient();
 
-    const { data: agent, error } = await supabase
+    // Apply RLS - users can only see their tenant's agents
+    const { data, error } = await supabase
       .from('voice_agents')
       .select('*')
       .eq('id', params.id)
-      .single();
+      .maybeSingle();
 
-    if (error || !agent) {
+    if (error) {
+      console.error('Error fetching agent:', error);
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
     }
 
-    // Type assertion after null check
-    const voiceAgent = agent as any;
-
-    // Check permissions
-    if (user.role === 'client') {
-      if (user.tenantId !== voiceAgent.tenant_id) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-      }
-    } else if (user.role === 'admin') {
-      if (user.tenantId !== voiceAgent.tenant_id) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-      }
-    }
-
-    return NextResponse.json({ agent: voiceAgent });
+    return NextResponse.json({ agent: data });
   } catch (error) {
-    console.error('Error in agent API route:', error);
+    console.error('Error in agents/[id] API route:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-// PUT /api/agents/[id] - Update an agent
+// PUT /api/agents/[id] - Update agent
 export async function PUT(
   request: NextRequest,
   { params }: { params: { id: string } }
@@ -56,73 +45,85 @@ export async function PUT(
       return NextResponse.json({ error: 'Clients cannot update agents' }, { status: 403 });
     }
 
-    // Get existing agent
+    const body = await request.json();
+    const { name, script, settings, cal_event_type_id, transfer_phone, webhook_urls } = body;
+
+    // Get existing agent to verify ownership and get Retell IDs
     const { data: existingAgent, error: fetchError } = await supabase
       .from('voice_agents')
       .select('*')
       .eq('id', params.id)
-      .single();
+      .maybeSingle();
 
     if (fetchError || !existingAgent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
     }
 
     // Type assertion after null check
-    const voiceAgent = existingAgent as any;
+    const agent = existingAgent as any;
 
-    // Check permissions
-    if (user.role === 'admin' && user.tenantId !== voiceAgent.tenant_id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    // Regenerate tools if tools_config is provided, otherwise use provided tools
+    let tools = settings?.tools || [];
+
+    if (settings?.tools_config) {
+      tools = generateTools(settings.tools_config, {
+        calApiKey: process.env.CAL_API_KEY,
+        calEventTypeId: cal_event_type_id,
+        transferPhone: transfer_phone,
+        webhookUrls: webhook_urls,
+        agentId: params.id,
+      });
     }
 
-    const body = await request.json();
-    const { name, script, settings, status } = body;
-
-    // Update agent in Retell AI if script or settings changed
-    if (script || settings) {
-      const retellResult = await updateRetellAgent(voiceAgent.retell_agent_id || '', {
+    // Update agent in Retell AI
+    const retellResult = await updateRetellAgent(
+      agent.retell_agent_id,
+      {
         name,
         script,
         voice_model: settings?.voice_model,
         language: settings?.language,
         response_speed: settings?.response_speed,
-      });
+      },
+      agent.retell_llm_id
+    );
 
-      if (retellResult.error) {
-        return NextResponse.json({ error: retellResult.error }, { status: 500 });
-      }
+    if (retellResult.error) {
+      return NextResponse.json({ error: retellResult.error }, { status: 500 });
     }
 
     // Update agent in database
-    const updateData: any = {
-      ...(name && { name }),
-      ...(script && { script }),
-      ...(settings && { settings }),
-      ...(status && { status }),
-      updated_at: new Date().toISOString(),
-    };
-
     const { data, error } = await supabase
       .from('voice_agents')
-      // @ts-ignore - Supabase type inference issue
-      .update(updateData)
+      .update({
+        name,
+        script,
+        settings: {
+          ...settings,
+          tools,
+          cal_event_type_id,
+          transfer_phone,
+          webhook_urls,
+        },
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', params.id)
       .select()
       .single();
 
     if (error) {
-      console.error('Error updating agent:', error);
+      console.error('Error updating agent in database:', error);
       return NextResponse.json({ error: 'Failed to update agent' }, { status: 500 });
     }
 
     return NextResponse.json({ agent: data });
   } catch (error) {
-    console.error('Error in agent API route:', error);
+    console.error('Error in agents/[id] PUT route:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-// DELETE /api/agents/[id] - Delete an agent
+// DELETE /api/agents/[id] - Delete agent
 export async function DELETE(
   request: NextRequest,
   { params }: { params: { id: string } }
@@ -135,47 +136,45 @@ export async function DELETE(
       return NextResponse.json({ error: 'Clients cannot delete agents' }, { status: 403 });
     }
 
-    // Get existing agent
-    const { data: existingAgent, error: fetchError } = await supabase
+    // Get existing agent to verify ownership and get Retell ID
+    let agentQuery = supabase
       .from('voice_agents')
       .select('*')
       .eq('id', params.id)
       .single();
 
+    if (user.role !== 'super_admin' && user.tenantId) {
+      agentQuery = agentQuery.eq('tenant_id', user.tenantId);
+    }
+
+    const { data: existingAgent, error: fetchError } = await agentQuery;
+
     if (fetchError || !existingAgent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
     }
 
-    // Type assertion after null check
-    const voiceAgent = existingAgent as any;
+    // Delete from Retell AI
+    const retellResult = await deleteRetellAgent(existingAgent.retell_agent_id);
 
-    // Check permissions
-    if (user.role === 'admin' && user.tenantId !== voiceAgent.tenant_id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    if (retellResult.error) {
+      console.error('Error deleting from Retell:', retellResult.error);
+      // Continue with database deletion even if Retell deletion fails
     }
 
-    // Delete agent from Retell AI
-    if (voiceAgent.retell_agent_id) {
-      const retellResult = await deleteRetellAgent(voiceAgent.retell_agent_id);
-      if (retellResult.error) {
-        console.error('Error deleting Retell agent:', retellResult.error);
-      }
-    }
-
-    // Delete agent from database
+    // Delete from database
     const { error } = await supabase
       .from('voice_agents')
       .delete()
       .eq('id', params.id);
 
     if (error) {
-      console.error('Error deleting agent:', error);
+      console.error('Error deleting agent from database:', error);
       return NextResponse.json({ error: 'Failed to delete agent' }, { status: 500 });
     }
 
-    return NextResponse.json({ message: 'Agent deleted successfully' });
+    return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('Error in agent API route:', error);
+    console.error('Error in agents/[id] DELETE route:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

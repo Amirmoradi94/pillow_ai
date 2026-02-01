@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, Mic, PhoneCall, FileText, Settings, LogOut } from 'lucide-react';
+import { LayoutDashboard, Mic, PhoneCall, Settings, LogOut, Users, Calendar } from 'lucide-react';
 
 const navItems = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Agents', href: '/dashboard/agents', icon: Mic },
   { name: 'Calls', href: '/dashboard/calls', icon: PhoneCall },
-  { name: 'Scripts', href: '/dashboard/scripts', icon: FileText },
+  { name: 'Calendar', href: '/dashboard/calendar', icon: Calendar },
+  { name: 'Team', href: '/dashboard/team', icon: Users },
   { name: 'Settings', href: '/dashboard/settings', icon: Settings },
 ];
 
@@ -29,9 +30,6 @@ export function ClientSidebar({ tenantName }: { tenantName?: string }) {
     <aside className="flex h-screen w-64 flex-col border-r bg-card">
       <div className="border-b p-6">
         <h1 className="text-2xl font-bold text-primary">Pillow AI</h1>
-        {tenantName && (
-          <p className="text-sm text-muted-foreground truncate">{tenantName}</p>
-        )}
       </div>
       <nav className="flex-1 space-y-1 p-4">
         {navItems.map((item) => {

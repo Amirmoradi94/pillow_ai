@@ -29,7 +29,99 @@ export const transferCallTool = (config: {
   transfer_option: config.transferType || 'phone',
 });
 
-// 3. CHECK AVAILABILITY - Check Cal.com availability
+// 3. CHECK AVAILABILITY - Custom Calendar System
+export const checkCalendarAvailabilityTool = (config: {
+  name: string;
+  description: string;
+  apiUrl: string;
+  agentId: string;
+}): RetellTool => ({
+  type: 'custom',
+  name: config.name || 'check_availability',
+  description: config.description || 'Check available appointment time slots',
+  url: `${config.apiUrl}/api/calendar/availability/retell`,
+  method: 'POST',
+  parameters: {
+    type: 'object',
+    properties: {
+      date: {
+        type: 'string',
+        description: 'Date to check (YYYY-MM-DD format)',
+      },
+      duration: {
+        type: 'number',
+        description: 'Duration in minutes (default 30)',
+      },
+      timezone: {
+        type: 'string',
+        description: 'Timezone (e.g., America/Los_Angeles, default UTC)',
+      },
+    },
+    required: ['date'],
+  },
+  headers: {
+    'X-Agent-ID': config.agentId,
+    'Authorization': `Bearer ${process.env.INTERNAL_API_KEY}`,
+  },
+  speak_during_execution: true,
+  execution_message_description: 'Checking available time slots...',
+});
+
+// 4. BOOK APPOINTMENT - Custom Calendar System
+export const bookCalendarAppointmentTool = (config: {
+  name: string;
+  description: string;
+  apiUrl: string;
+  agentId: string;
+}): RetellTool => ({
+  type: 'custom',
+  name: config.name || 'book_appointment',
+  description: config.description || 'Book an appointment for the customer',
+  url: `${config.apiUrl}/api/calendar/booking/retell`,
+  method: 'POST',
+  parameters: {
+    type: 'object',
+    properties: {
+      date_time: {
+        type: 'string',
+        description: 'Appointment date and time (ISO 8601 format)',
+      },
+      duration: {
+        type: 'number',
+        description: 'Duration in minutes (default 30)',
+      },
+      customer_name: {
+        type: 'string',
+        description: 'Customer full name',
+      },
+      customer_phone: {
+        type: 'string',
+        description: 'Customer phone number',
+      },
+      customer_email: {
+        type: 'string',
+        description: 'Customer email address (optional)',
+      },
+      notes: {
+        type: 'string',
+        description: 'Additional notes or special requests',
+      },
+      timezone: {
+        type: 'string',
+        description: 'Timezone (e.g., America/Los_Angeles, default UTC)',
+      },
+    },
+    required: ['date_time', 'customer_name', 'customer_phone'],
+  },
+  headers: {
+    'X-Agent-ID': config.agentId,
+    'Authorization': `Bearer ${process.env.INTERNAL_API_KEY}`,
+  },
+  speak_during_execution: true,
+  execution_message_description: 'Booking your appointment...',
+});
+
+// Legacy Cal.com tools (deprecated - use custom calendar tools above)
 export const checkAvailabilityTool = (config: {
   name: string;
   description: string;
@@ -45,7 +137,6 @@ export const checkAvailabilityTool = (config: {
   timezone: config.timezone || 'America/Los_Angeles',
 });
 
-// 4. BOOK APPOINTMENT - Book via Cal.com
 export const bookAppointmentTool = (config: {
   name: string;
   description: string;
@@ -243,12 +334,17 @@ export const emergencyTransferTool = (emergencyPhone: string): RetellTool => tra
 export const appointmentConfirmationSms = (): RetellTool => sendSmsTool({
   name: 'send_appointment_confirmation',
   description: 'Send SMS confirmation with appointment details',
+  message: 'Your appointment has been confirmed. We look forward to seeing you!',
 });
 
 // Export all tools for easy access
 export const RetellTools = {
   endCall: endCallTool,
   transferCall: transferCallTool,
+  // New custom calendar tools (preferred)
+  checkCalendarAvailability: checkCalendarAvailabilityTool,
+  bookCalendarAppointment: bookCalendarAppointmentTool,
+  // Legacy Cal.com tools (deprecated)
   checkAvailability: checkAvailabilityTool,
   bookAppointment: bookAppointmentTool,
   agentSwap: agentSwapTool,

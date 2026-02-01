@@ -63,9 +63,10 @@ export async function createRetellAgent(config: {
       },
       error: null,
     };
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error creating Retell agent:', error);
-    return { data: null, error: 'Failed to create agent' };
+    const errorMessage = error?.error?.error_message || error?.message || 'Failed to create agent';
+    return { data: null, error: errorMessage };
   }
 }
 
@@ -144,43 +145,105 @@ export async function listRetellAgents() {
 }
 
 // Phone number management functions
-export async function purchasePhoneNumber(areaCode?: string) {
+// Based on https://docs.retellai.com/api-references/create-phone-number
+export async function createPhoneNumber(config: {
+  areaCode: number;
+  inboundAgentId?: string;
+  outboundAgentId?: string;
+  nickname?: string;
+  countryCode?: 'US' | 'CA';
+  tollFree?: boolean;
+  numberProvider?: 'twilio' | 'telnyx';
+}) {
   try {
     // @ts-ignore - Retell SDK type definitions may vary
     const phoneNumber = await client.phoneNumber.create({
-      area_code: areaCode,
+      area_code: config.areaCode,
+      inbound_agent_id: config.inboundAgentId || null,
+      outbound_agent_id: config.outboundAgentId || null,
+      nickname: config.nickname,
+      country_code: config.countryCode || 'US',
+      toll_free: config.tollFree || false,
+      number_provider: config.numberProvider || 'twilio',
     });
 
     return { data: phoneNumber, error: null };
-  } catch (error) {
-    console.error('Error purchasing phone number:', error);
-    return { data: null, error: 'Failed to purchase phone number' };
+  } catch (error: any) {
+    console.error('Error creating phone number:', error);
+    const errorMessage = error?.error?.error_message || error?.message || 'Failed to create phone number';
+    return { data: null, error: errorMessage };
   }
 }
 
-export async function assignPhoneNumberToAgent(phoneNumber: string, agentId: string) {
+// Based on https://docs.retellai.com/api-references/update-phone-number
+export async function updatePhoneNumber(phoneNumber: string, config: {
+  inboundAgentId?: string | null;
+  outboundAgentId?: string | null;
+  nickname?: string;
+  inboundWebhookUrl?: string;
+}) {
   try {
     // @ts-ignore - Retell SDK type definitions may vary
     const result = await client.phoneNumber.update(phoneNumber, {
-      agent_id: agentId,
+      inbound_agent_id: config.inboundAgentId,
+      outbound_agent_id: config.outboundAgentId,
+      nickname: config.nickname,
+      inbound_webhook_url: config.inboundWebhookUrl,
     });
 
     return { data: result, error: null };
-  } catch (error) {
-    console.error('Error assigning phone number to agent:', error);
-    return { data: null, error: 'Failed to assign phone number' };
+  } catch (error: any) {
+    console.error('Error updating phone number:', error);
+    const errorMessage = error?.error?.error_message || error?.message || 'Failed to update phone number';
+    return { data: null, error: errorMessage };
   }
 }
 
+// Based on https://docs.retellai.com/api-references/list-phone-numbers
 export async function listPhoneNumbers() {
   try {
     // @ts-ignore - Retell SDK type definitions may vary
     const phoneNumbers = await client.phoneNumber.list();
     return { data: phoneNumbers, error: null };
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error listing phone numbers:', error);
-    return { data: null, error: 'Failed to list phone numbers' };
+    const errorMessage = error?.error?.error_message || error?.message || 'Failed to list phone numbers';
+    return { data: null, error: errorMessage };
   }
+}
+
+// Based on https://docs.retellai.com/api-references/get-phone-number
+export async function getPhoneNumber(phoneNumber: string) {
+  try {
+    // @ts-ignore - Retell SDK type definitions may vary
+    const result = await client.phoneNumber.retrieve(phoneNumber);
+    return { data: result, error: null };
+  } catch (error: any) {
+    console.error('Error getting phone number:', error);
+    const errorMessage = error?.error?.error_message || error?.message || 'Failed to get phone number';
+    return { data: null, error: errorMessage };
+  }
+}
+
+// Based on https://docs.retellai.com/api-references/delete-phone-number
+export async function deletePhoneNumber(phoneNumber: string) {
+  try {
+    // @ts-ignore - Retell SDK type definitions may vary
+    await client.phoneNumber.delete(phoneNumber);
+    return { error: null };
+  } catch (error: any) {
+    console.error('Error deleting phone number:', error);
+    const errorMessage = error?.error?.error_message || error?.message || 'Failed to delete phone number';
+    return { error: errorMessage };
+  }
+}
+
+// Backwards compatibility helper
+export async function assignPhoneNumberToAgent(phoneNumber: string, agentId: string) {
+  return updatePhoneNumber(phoneNumber, {
+    inboundAgentId: agentId,
+    outboundAgentId: agentId,
+  });
 }
 
 // Call management functions

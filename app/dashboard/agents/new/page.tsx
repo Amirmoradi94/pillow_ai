@@ -36,6 +36,16 @@ export default function NewAgentPage() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
+  const [transferPhone, setTransferPhone] = useState<string>('');
+
+  // Phone number states
+  const [phoneNumbers, setPhoneNumbers] = useState<any[]>([]);
+  const [selectedPhoneNumber, setSelectedPhoneNumber] = useState<string>('');
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
+  const [loadingPhoneNumbers, setLoadingPhoneNumbers] = useState(false);
+  const [purchasingPhone, setPurchasingPhone] = useState(false);
+  const [newPhoneAreaCode, setNewPhoneAreaCode] = useState<string>('');
+  const [newPhoneNickname, setNewPhoneNickname] = useState<string>('');
 
   const handleTemplateSelect = (template: AgentTemplate) => {
     setSelectedTemplate(template);
@@ -65,6 +75,65 @@ export default function NewAgentPage() {
       setLoadingVoices(false);
     }
   };
+
+  const fetchPhoneNumbers = async () => {
+    setLoadingPhoneNumbers(true);
+    try {
+      const response = await fetch('/api/phone-numbers');
+      if (response.ok) {
+        const data = await response.json();
+        setPhoneNumbers(data.phoneNumbers || []);
+      }
+    } catch (error) {
+      console.error('Error fetching phone numbers:', error);
+    } finally {
+      setLoadingPhoneNumbers(false);
+    }
+  };
+
+  const handlePurchasePhone = async () => {
+    if (!newPhoneAreaCode || newPhoneAreaCode.length !== 3) {
+      setError('Please enter a valid 3-digit area code');
+      return;
+    }
+
+    setPurchasingPhone(true);
+    setError('');
+
+    try {
+      const response = await fetch('/api/phone-numbers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          areaCode: newPhoneAreaCode,
+          nickname: newPhoneNickname || `Phone (${newPhoneAreaCode})`,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to purchase phone number');
+      }
+
+      const data = await response.json();
+      setSelectedPhoneNumber(data.phoneNumber.phone_number);
+      setNewPhoneAreaCode('');
+      setNewPhoneNickname('');
+      await fetchPhoneNumbers();
+      setShowPhoneModal(false);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setPurchasingPhone(false);
+    }
+  };
+
+  // Fetch phone numbers when modal opens
+  useEffect(() => {
+    if (showPhoneModal && phoneNumbers.length === 0) {
+      fetchPhoneNumbers();
+    }
+  }, [showPhoneModal]);
 
   const handleVoiceSelect = (voice: Voice) => {
     setSelectedVoice(voice.voice_id);
@@ -166,8 +235,7 @@ export default function NewAgentPage() {
         ? `${selectedTemplate.prompt}\n\nAdditional Instructions:\n${customInstructions}`
         : selectedTemplate.prompt;
 
-      // Generate tools from template config
-      const tools = generateTools(selectedTemplate.toolsConfig);
+      // Don't generate tools on client - will be done on server with API keys
 
       const response = await fetch('/api/agents', {
         method: 'POST',
@@ -182,13 +250,35 @@ export default function NewAgentPage() {
           },
           template_id: selectedTemplate.id,
           knowledge_base_ids: knowledgeBaseId ? [knowledgeBaseId] : [],
-          tools: tools,
+          tools_config: selectedTemplate.toolsConfig,
+          transfer_phone: transferPhone || undefined,
+          phone_number: selectedPhoneNumber || undefined,
         }),
       });
 
       if (!response.ok) {
         const data = await response.json();
         throw new Error(data.error || 'Failed to create agent');
+      }
+
+      const agentData = await response.json();
+
+      // Step 3: If phone number selected, bind it to the agent
+      if (selectedPhoneNumber && agentData.agent?.retell_agent_id) {
+        try {
+          await fetch(`/api/phone-numbers/${encodeURIComponent(selectedPhoneNumber)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              inboundAgentId: agentData.agent.retell_agent_id,
+              outboundAgentId: agentData.agent.retell_agent_id,
+              nickname: `${selectedTemplate.name} Phone`,
+            }),
+          });
+        } catch (err) {
+          console.error('Failed to bind phone number:', err);
+          // Don't fail the whole operation if phone binding fails
+        }
       }
 
       // Success! Redirect to agents list
@@ -422,6 +512,61 @@ export default function NewAgentPage() {
                   </p>
                 </div>
 
+                {/* Phone Number (Optional) */}
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Phone Number (Optional)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowPhoneModal(true)}
+                    className="w-full rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-primary"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-sm">
+                          {selectedPhoneNumber || 'Select or purchase a phone number...'}
+                        </div>
+                      </div>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="20"
+                        height="20"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                    </div>
+                  </button>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Phone number for making and receiving calls with this agent
+                  </p>
+                </div>
+
+                {/* Transfer Phone (Optional) */}
+                {selectedTemplate.toolsConfig.transfer && (
+                  <div>
+                    <label className="mb-2 block text-sm font-medium">
+                      Transfer Phone Number (Optional)
+                    </label>
+                    <input
+                      type="tel"
+                      value={transferPhone}
+                      onChange={(e) => setTransferPhone(e.target.value)}
+                      placeholder="+1234567890"
+                      className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Phone number to transfer calls to (include country code, e.g., +1).
+                    </p>
+                  </div>
+                )}
+
                 {/* Action Buttons */}
                 <div className="flex gap-3 pt-4">
                   <Button
@@ -611,21 +756,32 @@ export default function NewAgentPage() {
                           <div className="col-span-4 flex items-center gap-2">
                             {voice.preview_audio_url && (
                               <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  new Audio(voice.preview_audio_url).play();
-                                }}
+                                onClick={(e) => handlePlayVoice(voice.voice_id, voice.preview_audio_url!, e)}
                                 className="text-primary hover:text-primary/80"
                               >
-                                <svg
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  width="16"
-                                  height="16"
-                                  viewBox="0 0 24 24"
-                                  fill="currentColor"
-                                >
-                                  <path d="M8 5v14l11-7z" />
-                                </svg>
+                                {playingVoiceId === voice.voice_id ? (
+                                  <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                    className="animate-pulse"
+                                  >
+                                    <rect x="6" y="4" width="4" height="16" />
+                                    <rect x="14" y="4" width="4" height="16" />
+                                  </svg>
+                                ) : (
+                                  <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                  >
+                                    <path d="M8 5v14l11-7z" />
+                                  </svg>
+                                )}
                               </button>
                             )}
                             <div className="text-sm font-medium">{voice.voice_name}</div>
@@ -650,6 +806,116 @@ export default function NewAgentPage() {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Phone Number Modal */}
+      {showPhoneModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="mx-4 w-full max-w-2xl rounded-lg bg-card shadow-lg">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b p-4">
+              <h2 className="text-xl font-semibold">Select Phone Number</h2>
+              <button
+                onClick={() => setShowPhoneModal(false)}
+                className="rounded-lg p-2 hover:bg-muted"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="max-h-[500px] overflow-y-auto p-4">
+              {/* Purchase New Number */}
+              <div className="mb-6 rounded-lg border bg-muted/30 p-4">
+                <h3 className="mb-3 font-medium">Purchase New Number</h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-sm">Area Code (3 digits)</label>
+                    <input
+                      type="text"
+                      value={newPhoneAreaCode}
+                      onChange={(e) => setNewPhoneAreaCode(e.target.value.replace(/\D/g, '').slice(0, 3))}
+                      placeholder="e.g., 415"
+                      maxLength={3}
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm">Nickname (optional)</label>
+                    <input
+                      type="text"
+                      value={newPhoneNickname}
+                      onChange={(e) => setNewPhoneNickname(e.target.value)}
+                      placeholder="e.g., Main Support Line"
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <Button
+                    onClick={handlePurchasePhone}
+                    disabled={purchasingPhone || newPhoneAreaCode.length !== 3}
+                    className="w-full"
+                  >
+                    {purchasingPhone ? 'Purchasing...' : 'Purchase Number'}
+                  </Button>
+                </div>
+              </div>
+
+              {/* Existing Numbers */}
+              <div>
+                <h3 className="mb-3 font-medium">Existing Numbers</h3>
+                {loadingPhoneNumbers ? (
+                  <div className="py-8 text-center text-muted-foreground">Loading...</div>
+                ) : phoneNumbers.length === 0 ? (
+                  <div className="py-8 text-center text-muted-foreground">
+                    No phone numbers available. Purchase one above.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {phoneNumbers.map((phone: any) => (
+                      <button
+                        key={phone.phone_number}
+                        onClick={() => {
+                          setSelectedPhoneNumber(phone.phone_number);
+                          setShowPhoneModal(false);
+                        }}
+                        className={`w-full rounded-lg border p-3 text-left transition-colors hover:border-primary ${
+                          selectedPhoneNumber === phone.phone_number
+                            ? 'border-primary bg-primary/5'
+                            : ''
+                        }`}
+                      >
+                        <div className="font-medium">
+                          {phone.phone_number_pretty || phone.phone_number}
+                        </div>
+                        {phone.nickname && (
+                          <div className="text-sm text-muted-foreground">{phone.nickname}</div>
+                        )}
+                        {phone.inbound_agent_id && (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Already assigned to an agent
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

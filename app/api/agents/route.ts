@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase/server';
 import { createRetellAgent, updateRetellAgent, deleteRetellAgent } from '@/lib/retell/client';
 import { requireAuth } from '@/lib/supabase/auth';
+import { generateTools } from '@/lib/agent-templates';
 
 // GET /api/agents - List all agents for the current tenant
 export async function GET(request: NextRequest) {
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { name, script, settings, tenant_id, knowledge_base_ids, tools, template_id } = body;
+    const { name, script, settings, tenant_id, knowledge_base_ids, tools_config, cal_event_type_id, transfer_phone, template_id } = body;
 
     if (!name || !script) {
       return NextResponse.json({ error: 'Name and script are required' }, { status: 400 });
@@ -61,6 +62,13 @@ export async function POST(request: NextRequest) {
     } else if (user.role === 'super_admin' && !targetTenantId) {
       return NextResponse.json({ error: 'Tenant ID is required for super admins' }, { status: 400 });
     }
+
+    // Generate tools from config with server-side credentials
+    const tools = tools_config ? generateTools(tools_config, {
+      calApiKey: process.env.CAL_API_KEY,
+      calEventTypeId: cal_event_type_id,
+      transferPhone: transfer_phone,
+    }) : [];
 
     // Create agent in Retell AI with knowledge bases and tools
     const retellResult = await createRetellAgent({
