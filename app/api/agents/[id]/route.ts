@@ -84,6 +84,8 @@ export async function PUT(
         voice_model: settings?.voice_model,
         language: settings?.language,
         response_speed: settings?.response_speed,
+        ambient_sound: settings?.ambient_sound,
+        ambient_sound_volume: settings?.ambient_sound_volume,
       },
       agent.retell_llm_id
     );

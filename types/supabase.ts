@@ -14,6 +14,14 @@ export interface Database {
           id: string
           name: string
           brand_config: Json | null
+          subscription_tier: 'free_trial' | 'basic' | 'pro' | 'enterprise'
+          subscription_status: 'active' | 'expired' | 'cancelled'
+          trial_ends_at: string | null
+          monthly_minutes_limit: number
+          minutes_used_current_period: number
+          period_starts_at: string
+          period_ends_at: string | null
+          concurrency_limit: number
           created_at: string
           updated_at: string
         }
@@ -21,6 +29,14 @@ export interface Database {
           id?: string
           name: string
           brand_config?: Json | null
+          subscription_tier?: 'free_trial' | 'basic' | 'pro' | 'enterprise'
+          subscription_status?: 'active' | 'expired' | 'cancelled'
+          trial_ends_at?: string | null
+          monthly_minutes_limit?: number
+          minutes_used_current_period?: number
+          period_starts_at?: string
+          period_ends_at?: string | null
+          concurrency_limit?: number
           created_at?: string
           updated_at?: string
         }
@@ -28,6 +44,14 @@ export interface Database {
           id?: string
           name?: string
           brand_config?: Json | null
+          subscription_tier?: 'free_trial' | 'basic' | 'pro' | 'enterprise'
+          subscription_status?: 'active' | 'expired' | 'cancelled'
+          trial_ends_at?: string | null
+          monthly_minutes_limit?: number
+          minutes_used_current_period?: number
+          period_starts_at?: string
+          period_ends_at?: string | null
+          concurrency_limit?: number
           created_at?: string
           updated_at?: string
         }
@@ -432,6 +456,38 @@ export interface Database {
           event_type_config?: Json
           distribution_strategy?: 'round_robin' | 'least_busy' | 'priority' | 'specific_user'
           notifications?: Json
+          created_at?: string
+          updated_at?: string
+        }
+      }
+      google_auth_tokens: {
+        Row: {
+          id: string
+          user_id: string
+          access_token: string
+          refresh_token: string | null
+          expires_at: string | null
+          scope: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          access_token: string
+          refresh_token?: string | null
+          expires_at?: string | null
+          scope?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          access_token?: string
+          refresh_token?: string | null
+          expires_at?: string | null
+          scope?: string | null
           created_at?: string
           updated_at?: string
         }

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3001",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
@@ -16,6 +16,7 @@
     "@radix-ui/react-slot": "^1.0.2",
     "@radix-ui/react-tabs": "^1.0.4",
     "@radix-ui/react-toast": "^1.1.5",
+    "@splinetool/react-spline": "^4.1.0",
     "@supabase/auth-helpers-nextjs": "^0.15.0",
     "@supabase/ssr": "^0.5.0",
     "@supabase/supabase-js": "^2.45.0",
@@ -25,6 +26,7 @@
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
     "googleapis": "^171.0.0",
+    "lottie-react": "^2.4.1",
     "lucide-react": "^0.400.0",
     "next": "^14.2.0",
     "react": "^18.3.0",
@@ -32,6 +34,7 @@
     "react-dom": "^18.3.0",
     "retell-client-js-sdk": "^2.0.7",
     "retell-sdk": "^3.0.0",
+    "stripe": "^14.14.0",
     "tailwind-merge": "^2.3.0"
   },
   "devDependencies": {

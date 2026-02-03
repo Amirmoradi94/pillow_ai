@@ -79,6 +79,8 @@ export async function POST(request: NextRequest) {
       response_speed: settings?.response_speed,
       knowledge_base_ids: knowledge_base_ids || [],
       tools: tools || [],
+      ambient_sound: settings?.ambient_sound,
+      ambient_sound_volume: settings?.ambient_sound_volume,
     });
 
     if (retellResult.error || !retellResult.data) {

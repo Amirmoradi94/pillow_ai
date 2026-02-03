@@ -6,6 +6,8 @@ import { ArrowLeft, Upload, FileText, Link as LinkIcon } from 'lucide-react';
 import Link from 'next/link';
 import { agentTemplates, type AgentTemplate, generateTools } from '@/lib/agent-templates';
 import { Button } from '@/components/ui/button';
+import { SalesAgentConfig, type SalesAgentConfig as SalesConfig } from '@/components/agents/sales-agent-config';
+import { BACKGROUND_SOUNDS, DEFAULT_BACKGROUND_SOUND, DEFAULT_BACKGROUND_SOUND_VOLUME, type BackgroundSound } from '@/lib/background-sounds';
 
 interface Voice {
   voice_id: string;
@@ -19,8 +21,9 @@ interface Voice {
 
 export default function NewAgentPage() {
   const router = useRouter();
-  const [step, setStep] = useState<'template' | 'configure'>('template');
+  const [step, setStep] = useState<'template' | 'sales-config' | 'configure'>('template');
   const [selectedTemplate, setSelectedTemplate] = useState<AgentTemplate | null>(null);
+  const [salesAgentConfig, setSalesAgentConfig] = useState<SalesConfig | null>(null);
   const [customInstructions, setCustomInstructions] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
@@ -38,6 +41,10 @@ export default function NewAgentPage() {
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
   const [transferPhone, setTransferPhone] = useState<string>('');
 
+  // Background sound states
+  const [backgroundSound, setBackgroundSound] = useState<BackgroundSound>(DEFAULT_BACKGROUND_SOUND);
+  const [backgroundSoundVolume, setBackgroundSoundVolume] = useState(DEFAULT_BACKGROUND_SOUND_VOLUME);
+
   // Phone number states
   const [phoneNumbers, setPhoneNumbers] = useState<any[]>([]);
   const [selectedPhoneNumber, setSelectedPhoneNumber] = useState<string>('');
@@ -51,6 +58,17 @@ export default function NewAgentPage() {
     setSelectedTemplate(template);
     setSelectedVoice(template.suggestedVoice);
     setSelectedVoiceName(template.suggestedVoice.split('-')[1] || template.suggestedVoice);
+
+    // Sales Agent needs special configuration
+    if (template.id === 'sales-agent-outbound') {
+      setStep('sales-config');
+    } else {
+      setStep('configure');
+    }
+  };
+
+  const handleSalesAgentConfigComplete = (config: SalesConfig) => {
+    setSalesAgentConfig(config);
     setStep('configure');
   };
 
@@ -247,6 +265,8 @@ export default function NewAgentPage() {
             voice_model: selectedVoice || selectedTemplate.suggestedVoice,
             language: selectedTemplate.language,
             response_speed: 'medium',
+            ambient_sound: backgroundSound !== 'none' ? backgroundSound : undefined,
+            ambient_sound_volume: backgroundSound !== 'none' ? backgroundSoundVolume : undefined,
           },
           template_id: selectedTemplate.id,
           knowledge_base_ids: knowledgeBaseId ? [knowledgeBaseId] : [],
@@ -321,57 +341,124 @@ export default function NewAgentPage() {
               </p>
             </div>
 
-            {/* Start from Blank Option */}
-            <div
-              onClick={() => router.push('/dashboard/agents/new/blank')}
-              className="flex cursor-pointer items-center gap-4 rounded-lg border-2 border-dashed p-6 transition-colors hover:border-primary hover:bg-primary/5"
-            >
-              <div className="flex h-16 w-16 items-center justify-center rounded-lg bg-muted">
-                <span className="text-3xl">+</span>
-              </div>
-              <div>
-                <h3 className="font-semibold">Start from Blank</h3>
-                <p className="text-sm text-muted-foreground">
-                  Create a custom agent from scratch
-                </p>
-              </div>
-            </div>
-
-            {/* Template Grid */}
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {agentTemplates.map((template) => (
-                <div
-                  key={template.id}
-                  onClick={() => handleTemplateSelect(template)}
-                  className="cursor-pointer rounded-lg border bg-card p-6 transition-all hover:border-primary hover:shadow-lg"
-                >
-                  <div className="mb-4 flex items-center gap-3">
-                    <span className="text-4xl">{template.icon}</span>
-                    <div>
-                      <div className="flex flex-wrap gap-1">
-                        {template.capabilities.map((cap) => (
-                          <span
-                            key={cap}
-                            className="rounded-full bg-muted px-2 py-1 text-xs"
-                          >
-                            {cap}
-                          </span>
-                        ))}
+            {/* Sales Agent - Featured */}
+            {agentTemplates
+              .filter((t) => t.id === 'sales-agent-outbound')
+              .map((template) => (
+                <div key={template.id} className="mb-8">
+                  <div
+                    onClick={() => handleTemplateSelect(template)}
+                    className="cursor-pointer rounded-lg border border-amber-200 bg-gradient-to-br from-amber-50 to-yellow-50 p-6 transition-all hover:border-amber-300 hover:shadow-lg"
+                  >
+                    <div className="mb-4 flex items-center gap-3">
+                      <span className="text-4xl">{template.icon}</span>
+                      <div>
+                        <div className="flex flex-wrap gap-1">
+                          {template.capabilities.map((cap) => (
+                            <span
+                              key={cap}
+                              className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-800"
+                            >
+                              {cap}
+                            </span>
+                          ))}
+                        </div>
                       </div>
                     </div>
+                    <h3 className="mb-2 font-semibold">{template.name}</h3>
+                    <p className="text-sm text-muted-foreground">
+                      {template.description}
+                    </p>
+                    <div className="mt-4 flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">
+                        {template.industry}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800">
+                        <span className="relative flex h-2 w-2">
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75"></span>
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500"></span>
+                        </span>
+                        Outbound Calling
+                      </span>
+                    </div>
                   </div>
-                  <h3 className="mb-2 font-semibold">{template.name}</h3>
-                  <p className="text-sm text-muted-foreground">
-                    {template.description}
-                  </p>
-                  <div className="mt-4">
-                    <span className="text-xs text-muted-foreground">
-                      {template.industry}
-                    </span>
+
+                  {/* Divider */}
+                  <div className="relative my-8">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-border"></div>
+                    </div>
+                    <div className="relative flex justify-center">
+                      <span className="bg-muted/50 px-4 text-sm text-muted-foreground">
+                        Inbound Call Templates
+                      </span>
+                    </div>
                   </div>
                 </div>
               ))}
+
+            {/* Regular Templates Grid */}
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {agentTemplates
+                .filter((t) => t.id !== 'sales-agent-outbound')
+                .map((template) => (
+                  <div
+                    key={template.id}
+                    onClick={() => handleTemplateSelect(template)}
+                    className="cursor-pointer rounded-lg border bg-card p-6 transition-all hover:border-primary hover:shadow-lg"
+                  >
+                    <div className="mb-4 flex items-center gap-3">
+                      <span className="text-4xl">{template.icon}</span>
+                      <div>
+                        <div className="flex flex-wrap gap-1">
+                          {template.capabilities.map((cap) => (
+                            <span
+                              key={cap}
+                              className="rounded-full bg-muted px-2 py-1 text-xs"
+                            >
+                              {cap}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <h3 className="mb-2 font-semibold">{template.name}</h3>
+                    <p className="text-sm text-muted-foreground">
+                      {template.description}
+                    </p>
+                    <div className="mt-4">
+                      <span className="text-xs text-muted-foreground">
+                        {template.industry}
+                      </span>
+                    </div>
+                  </div>
+                ))}
             </div>
+          </div>
+        )}
+
+        {/* Sales Agent Configuration Step */}
+        {step === 'sales-config' && selectedTemplate && (
+          <div className="space-y-6">
+            <Link
+              href="/dashboard/agents"
+              className="mb-4 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to Agents
+            </Link>
+
+            <div>
+              <h1 className="text-3xl font-bold">Configure Sales Agent</h1>
+              <p className="text-muted-foreground">
+                Set up your outbound calling agent with schedule and call settings
+              </p>
+            </div>
+
+            <SalesAgentConfig
+              onComplete={handleSalesAgentConfigComplete}
+              onBack={() => setStep('template')}
+            />
           </div>
         )}
 
@@ -511,6 +598,53 @@ export default function NewAgentPage() {
                     Select the voice for your agent. Preview available in selector.
                   </p>
                 </div>
+
+                {/* Background Sound */}
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Background Sound
+                  </label>
+                  <select
+                    value={backgroundSound}
+                    onChange={(e) => setBackgroundSound(e.target.value as BackgroundSound)}
+                    className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    {BACKGROUND_SOUNDS.map((sound) => (
+                      <option key={sound.value} value={sound.value}>
+                        {sound.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {BACKGROUND_SOUNDS.find(s => s.value === backgroundSound)?.description}
+                  </p>
+                </div>
+
+                {/* Background Sound Volume */}
+                {backgroundSound !== 'none' && (
+                  <div>
+                    <label className="mb-2 block text-sm font-medium">
+                      Background Sound Volume
+                    </label>
+                    <div className="flex items-center gap-4">
+                      <input
+                        type="range"
+                        min="0"
+                        max="2"
+                        step="0.1"
+                        value={backgroundSoundVolume}
+                        onChange={(e) => setBackgroundSoundVolume(parseFloat(e.target.value))}
+                        className="flex-1"
+                      />
+                      <span className="w-12 text-sm text-muted-foreground">
+                        {backgroundSoundVolume.toFixed(1)}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Adjust the volume of the ambient background sound (0 = quieter, 2 = louder)
+                    </p>
+                  </div>
+                )}
 
                 {/* Phone Number (Optional) */}
                 <div>

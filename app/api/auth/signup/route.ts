@@ -53,6 +53,10 @@ export async function POST(request: NextRequest) {
 
     // Create tenant and user record
     if (data.user) {
+      // Calculate trial end date (14 days from now)
+      const trialEndsAt = new Date();
+      trialEndsAt.setDate(trialEndsAt.getDate() + 14);
+
       // First, create a new tenant for this business
       const { data: tenantData, error: tenantError } = await supabase
         .from('tenants')
@@ -60,6 +64,14 @@ export async function POST(request: NextRequest) {
           {
             name: companyName,
             brand_config: {},
+            subscription_tier: 'free_trial',
+            subscription_status: 'active',
+            trial_ends_at: trialEndsAt.toISOString(),
+            monthly_minutes_limit: 100,
+            minutes_used_current_period: 0,
+            period_starts_at: new Date().toISOString(),
+            period_ends_at: trialEndsAt.toISOString(),
+            concurrency_limit: 5,
           },
         ])
         .select()

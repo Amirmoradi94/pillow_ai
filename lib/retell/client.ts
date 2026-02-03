@@ -15,6 +15,8 @@ export async function createRetellAgent(config: {
   response_speed?: 'fast' | 'medium' | 'slow';
   knowledge_base_ids?: string[];
   tools?: any[];
+  ambient_sound?: string;
+  ambient_sound_volume?: number;
 }) {
   try {
     // Step 1: Create Retell LLM with the script
@@ -39,8 +41,7 @@ export async function createRetellAgent(config: {
 
     // Step 2: Create agent with the LLM ID
     // https://docs.retellai.com/api-references/create-agent
-    // @ts-ignore
-    const agent = await client.agent.create({
+    const agentConfig: any = {
       agent_name: config.name,
       voice_id: config.voice_model || '11labs-Adrian',
       language: config.language || 'en-US',
@@ -53,7 +54,18 @@ export async function createRetellAgent(config: {
       interruption_sensitivity: 0.5,
       enable_backchannel: true,
       backchannel_frequency: 0.3,
-    });
+    };
+
+    // Add background sound if provided
+    if (config.ambient_sound) {
+      agentConfig.ambient_sound = config.ambient_sound;
+    }
+    if (config.ambient_sound_volume !== undefined) {
+      agentConfig.ambient_sound_volume = config.ambient_sound_volume;
+    }
+
+    // @ts-ignore
+    const agent = await client.agent.create(agentConfig);
 
     // Return agent with llm_id
     return {
@@ -78,6 +90,8 @@ export async function updateRetellAgent(
     voice_model?: string;
     language?: string;
     response_speed?: 'fast' | 'medium' | 'slow';
+    ambient_sound?: string;
+    ambient_sound_volume?: number;
   },
   llmId?: string
 ) {
@@ -99,6 +113,12 @@ export async function updateRetellAgent(
     if (config.language) updateData.language = config.language;
     if (config.response_speed) {
       updateData.responsiveness = config.response_speed === 'fast' ? 0.8 : config.response_speed === 'slow' ? 0.3 : 0.5;
+    }
+    if (config.ambient_sound !== undefined) {
+      updateData.ambient_sound = config.ambient_sound || null;
+    }
+    if (config.ambient_sound_volume !== undefined) {
+      updateData.ambient_sound_volume = config.ambient_sound_volume;
     }
 
     // @ts-ignore

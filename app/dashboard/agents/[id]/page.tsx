@@ -6,6 +6,7 @@ import { ArrowLeft, Save, Trash2, Plus, X, Settings, Phone, Zap, PhoneCall, Phon
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { RetellTools } from '@/lib/retell-tools';
+import { BACKGROUND_SOUNDS, DEFAULT_BACKGROUND_SOUND, DEFAULT_BACKGROUND_SOUND_VOLUME, type BackgroundSound } from '@/lib/background-sounds';
 
 interface Voice {
   voice_id: string;
@@ -75,6 +76,10 @@ export default function AgentEditPage() {
   // Tool management
   const [activeTab, setActiveTab] = useState<'config' | 'tools' | 'test'>('config');
   const [transferPhone, setTransferPhone] = useState('');
+
+  // Background sound states
+  const [backgroundSound, setBackgroundSound] = useState<BackgroundSound>(DEFAULT_BACKGROUND_SOUND);
+  const [backgroundSoundVolume, setBackgroundSoundVolume] = useState(DEFAULT_BACKGROUND_SOUND_VOLUME);
 
   // Phone number states
   const [phoneNumbers, setPhoneNumbers] = useState<any[]>([]);
@@ -248,6 +253,11 @@ export default function AgentEditPage() {
       setLanguage(agentData.settings?.language || 'en-US');
       setResponseSpeed(agentData.settings?.response_speed || 'medium');
 
+      // Load background sound settings
+      const ambientSound = agentData.settings?.ambient_sound;
+      setBackgroundSound(ambientSound || DEFAULT_BACKGROUND_SOUND);
+      setBackgroundSoundVolume(agentData.settings?.ambient_sound_volume || DEFAULT_BACKGROUND_SOUND_VOLUME);
+
       // Parse existing tools to set enabled state
       const existingTools = agentData.settings?.tools || [];
       setAvailableTools(prev => prev.map(tool => ({
@@ -379,6 +389,8 @@ export default function AgentEditPage() {
             language,
             response_speed: responseSpeed,
             tools,
+            ambient_sound: backgroundSound !== 'none' ? backgroundSound : undefined,
+            ambient_sound_volume: backgroundSound !== 'none' ? backgroundSoundVolume : undefined,
           },
           transfer_phone: transferPhone || undefined,
           webhook_urls: webhookUrls,
@@ -763,6 +775,53 @@ export default function AgentEditPage() {
                     <option value="slow">Slow</option>
                   </select>
                 </div>
+
+                {/* Background Sound */}
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Background Sound
+                  </label>
+                  <select
+                    value={backgroundSound}
+                    onChange={(e) => setBackgroundSound(e.target.value as BackgroundSound)}
+                    className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    {BACKGROUND_SOUNDS.map((sound) => (
+                      <option key={sound.value} value={sound.value}>
+                        {sound.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {BACKGROUND_SOUNDS.find(s => s.value === backgroundSound)?.description}
+                  </p>
+                </div>
+
+                {/* Background Sound Volume */}
+                {backgroundSound !== 'none' && (
+                  <div>
+                    <label className="mb-2 block text-sm font-medium">
+                      Background Sound Volume
+                    </label>
+                    <div className="flex items-center gap-4">
+                      <input
+                        type="range"
+                        min="0"
+                        max="2"
+                        step="0.1"
+                        value={backgroundSoundVolume}
+                        onChange={(e) => setBackgroundSoundVolume(parseFloat(e.target.value))}
+                        className="flex-1"
+                      />
+                      <span className="w-12 text-sm text-muted-foreground">
+                        {backgroundSoundVolume.toFixed(1)}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Adjust the volume of the ambient background sound (0 = quieter, 2 = louder)
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -997,37 +1056,20 @@ export default function AgentEditPage() {
               )}
             </div>
 
-            {/* Agent Info */}
+            {/* Phone Number Assignment */}
             <div className="rounded-lg border bg-card p-6">
-              <h3 className="mb-3 font-semibold">Agent Information</h3>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Agent ID:</span>
-                  <span className="font-mono">{agent.retell_agent_id}</span>
+              <button
+                onClick={() => setShowPhoneModal(true)}
+                className="group relative w-full overflow-hidden rounded-xl px-6 py-4 text-white shadow-lg transition-all duration-300 hover:shadow-xl hover:scale-[1.02]"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-purple-600 via-pink-600 to-purple-600 bg-size-200 animate-gradient" />
+                <div className="relative flex items-center justify-center gap-3">
+                  <Phone className="h-5 w-5" />
+                  <span className="text-lg font-semibold">
+                    {selectedPhoneNumber ? 'Change Phone Number' : 'Assign Phone Number'}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Voice Model:</span>
-                  <span>{agent.settings?.voice_model || 'Default'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Language:</span>
-                  <span>{agent.settings?.language || 'en-US'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Phone Number:</span>
-                  <span>{selectedPhoneNumber || 'Not assigned'}</span>
-                </div>
-              </div>
-              <div className="mt-4">
-                <Button
-                  onClick={() => setShowPhoneModal(true)}
-                  variant="outline"
-                  className="w-full gap-2"
-                >
-                  <Phone className="h-4 w-4" />
-                  {selectedPhoneNumber ? 'Change Phone Number' : 'Assign Phone Number'}
-                </Button>
-              </div>
+              </button>
             </div>
           </div>
         )}
