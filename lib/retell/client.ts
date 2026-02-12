@@ -195,6 +195,42 @@ export async function createPhoneNumber(config: {
   }
 }
 
+// Based on https://docs.retellai.com/api-references/import-phone-number
+export async function importPhoneNumber(config: {
+  phoneNumber: string;
+  terminationUri: string;
+  sipTrunkAuthUsername?: string;
+  sipTrunkAuthPassword?: string;
+  inboundAgentId?: string | null;
+  outboundAgentId?: string | null;
+  nickname?: string;
+  inboundWebhookUrl?: string;
+  allowedInboundCountryList?: string[];
+  allowedOutboundCountryList?: string[];
+}) {
+  try {
+    // @ts-ignore - Retell SDK type definitions may vary
+    const phoneNumber = await client.phoneNumber.import({
+      phone_number: config.phoneNumber,
+      termination_uri: config.terminationUri,
+      sip_trunk_auth_username: config.sipTrunkAuthUsername,
+      sip_trunk_auth_password: config.sipTrunkAuthPassword,
+      inbound_agent_id: config.inboundAgentId,
+      outbound_agent_id: config.outboundAgentId,
+      nickname: config.nickname,
+      inbound_webhook_url: config.inboundWebhookUrl,
+      allowed_inbound_country_list: config.allowedInboundCountryList,
+      allowed_outbound_country_list: config.allowedOutboundCountryList,
+    });
+
+    return { data: phoneNumber, error: null };
+  } catch (error: any) {
+    console.error('Error importing phone number:', error);
+    const errorMessage = error?.error?.error_message || error?.message || 'Failed to import phone number';
+    return { data: null, error: errorMessage };
+  }
+}
+
 // Based on https://docs.retellai.com/api-references/update-phone-number
 export async function updatePhoneNumber(phoneNumber: string, config: {
   inboundAgentId?: string | null;

@@ -3,7 +3,7 @@
  * Handles trial status checking, usage tracking, and feature access control
  */
 
-import { createClient } from '@/lib/supabase/server';
+import { createServerClient } from '@/lib/supabase/server';
 
 // Trial configuration (Option B)
 export const TRIAL_CONFIG = {
@@ -49,7 +49,7 @@ export const PLAN_CONFIG = {
     price: { monthly: 149, yearly: 119 },
     features: {
       max_agents: 3,
-      max_phone_numbers: 2,
+      max_phone_numbers: 3,
       custom_voice_cloning: true,
       advanced_analytics: true,
       crm_integration: true,
@@ -65,7 +65,7 @@ export const PLAN_CONFIG = {
     price: { monthly: 349, yearly: 279 },
     features: {
       max_agents: 999,
-      max_phone_numbers: 5,
+      max_phone_numbers: 10,
       custom_voice_cloning: true,
       advanced_analytics: true,
       crm_integration: true,
@@ -100,7 +100,7 @@ export interface TenantUsage {
  * Get comprehensive usage statistics for a tenant
  */
 export async function getTenantUsage(tenantId: string): Promise<TenantUsage | null> {
-  const supabase = createClient();
+  const supabase = await createServerClient();
 
   const { data, error } = await supabase.rpc('get_tenant_usage', {
     tenant_uuid: tenantId,
@@ -176,7 +176,7 @@ export async function hasFeatureAccess(
   tenantId: string,
   feature: keyof typeof TRIAL_CONFIG.FEATURES
 ): Promise<boolean> {
-  const supabase = createClient();
+  const supabase = await createServerClient();
 
   const { data: tenant, error } = await supabase
     .from('tenants')
@@ -190,6 +190,27 @@ export async function hasFeatureAccess(
   }
 
   return tenant.features?.[feature] === true;
+}
+
+export async function getTenantFeatureLimit(
+  tenantId: string,
+  feature: keyof typeof TRIAL_CONFIG.FEATURES
+): Promise<number> {
+  const supabase = await createServerClient();
+
+  const { data: tenant, error } = await supabase
+    .from('tenants')
+    .select('features')
+    .eq('id', tenantId)
+    .single();
+
+  if (error || !tenant) {
+    console.error('Error fetching tenant features:', error);
+    return 0;
+  }
+
+  const value = tenant.features?.[feature];
+  return typeof value === 'number' ? value : 0;
 }
 
 /**

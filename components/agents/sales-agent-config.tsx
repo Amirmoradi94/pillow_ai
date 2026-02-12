@@ -10,10 +10,14 @@ interface SalesAgentConfigProps {
 }
 
 export interface SalesAgentConfig {
+  dataSource: 'google_sheets' | 'csv_upload';
   // Google Sheets
   googleSheetsConnected: boolean;
   inputSheetId?: string;
   inputSheetName?: string;
+  csvFileId?: string;
+  csvFileName?: string;
+  csvRowCount?: number;
   columnMapping?: {
     businessName: string;
     phoneNumber: string;
@@ -76,11 +80,26 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
   const [currentStep, setCurrentStep] = useState(1);
 
   // Google Sheets State
+  const [dataSource, setDataSource] = useState<'google_sheets' | 'csv_upload'>('google_sheets');
   const [sheetsConnected, setSheetsConnected] = useState(false);
   const [selectedSheet, setSelectedSheet] = useState('');
+  const [selectedSheetName, setSelectedSheetName] = useState('');
   const [spreadsheets, setSpreadsheets] = useState<Array<{ id: string; name: string }>>([]);
+  const [sheetTabs, setSheetTabs] = useState<Array<{ id: number; title: string }>>([]);
+  const [loadingSheetInfo, setLoadingSheetInfo] = useState(false);
   const [loadingSheets, setLoadingSheets] = useState(false);
   const [checkingConnection, setCheckingConnection] = useState(true);
+
+  // CSV Upload State
+  const [uploadingCsv, setUploadingCsv] = useState(false);
+  const [csvError, setCsvError] = useState('');
+  const [uploadedCsv, setUploadedCsv] = useState<{
+    id: string;
+    name: string;
+    rowCount: number;
+    headers: string[];
+  } | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   // Schedule State
   const [scheduleType, setScheduleType] = useState<'daily' | 'weekly' | 'custom'>('weekly');
@@ -97,8 +116,12 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
 
   // Check if Google Sheets is already connected on mount
   useEffect(() => {
-    checkGoogleSheetsConnection();
-  }, []);
+    if (dataSource === 'google_sheets') {
+      checkGoogleSheetsConnection();
+    } else {
+      setCheckingConnection(false);
+    }
+  }, [dataSource]);
 
   // Listen for OAuth success
   useEffect(() => {
@@ -110,6 +133,17 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
+
+  useEffect(() => {
+    if (dataSource === 'csv_upload') {
+      setSelectedSheet('');
+      setSelectedSheetName('');
+      setSheetTabs([]);
+    } else {
+      setUploadedCsv(null);
+      setCsvError('');
+    }
+  }, [dataSource]);
 
   const checkGoogleSheetsConnection = async () => {
     setCheckingConnection(true);
@@ -158,6 +192,79 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
     }
   };
 
+  const handleCsvUpload = async (file: File) => {
+    setUploadingCsv(true);
+    setCsvError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch('/api/prospects/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        if (data.missing?.length) {
+          setCsvError(`Missing required headers: ${data.missing.join(', ')}`);
+        } else if (data.missingRows?.length || data.invalidPhoneRows?.length) {
+          const missingRows = data.missingRows?.length
+            ? `Missing required fields in rows: ${data.missingRows.join(', ')}`
+            : '';
+          const invalidPhones = data.invalidPhoneRows?.length
+            ? `Invalid phone format in rows: ${data.invalidPhoneRows.join(', ')} (use +1-555-1234)`
+            : '';
+          setCsvError([missingRows, invalidPhones].filter(Boolean).join(' | '));
+        } else {
+          setCsvError(data.error || 'Upload failed');
+        }
+        setUploadedCsv(null);
+        return;
+      }
+
+      setUploadedCsv({
+        id: data.id,
+        name: data.name,
+        rowCount: data.rowCount,
+        headers: data.headers,
+      });
+    } catch (error) {
+      console.error('Error uploading CSV:', error);
+      setCsvError('Upload failed. Please try again.');
+    } finally {
+      setUploadingCsv(false);
+    }
+  };
+
+  const handleCsvDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragOver(false);
+    const file = event.dataTransfer.files?.[0];
+    if (file) handleCsvUpload(file);
+  };
+
+  const loadSheetTabs = async (spreadsheetId: string) => {
+    setLoadingSheetInfo(true);
+    try {
+      const response = await fetch(`/api/google/sheets/${spreadsheetId}/info`);
+      const data = await response.json();
+      if (response.ok) {
+        const tabs = (data.sheets || []).map((sheet: any) => ({
+          id: sheet.sheetId,
+          title: sheet.title,
+        }));
+        setSheetTabs(tabs);
+        setSelectedSheetName(tabs[0]?.title || '');
+      }
+    } catch (error) {
+      console.error('Error fetching sheet tabs:', error);
+    } finally {
+      setLoadingSheetInfo(false);
+    }
+  };
+
   const toggleDay = (day: string) => {
     if (selectedDays.includes(day)) {
       setSelectedDays(selectedDays.filter((d) => d !== day));
@@ -168,8 +275,13 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
 
   const handleComplete = () => {
     const config: SalesAgentConfig = {
+      dataSource,
       googleSheetsConnected: sheetsConnected,
       inputSheetId: selectedSheet,
+      inputSheetName: selectedSheetName,
+      csvFileId: dataSource === 'csv_upload' ? uploadedCsv?.id : undefined,
+      csvFileName: dataSource === 'csv_upload' ? uploadedCsv?.name : undefined,
+      csvRowCount: dataSource === 'csv_upload' ? uploadedCsv?.rowCount : undefined,
       schedule: {
         type: scheduleType,
         days: selectedDays,
@@ -188,7 +300,10 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
   };
 
   const canProceed = () => {
-    if (currentStep === 1) return sheetsConnected && selectedSheet;
+    if (currentStep === 1) {
+      if (dataSource === 'google_sheets') return sheetsConnected && selectedSheet && selectedSheetName;
+      return !!uploadedCsv;
+    }
     if (currentStep === 2) return selectedDays.length > 0 && startTime && endTime;
     if (currentStep === 3) return maxCalls > 0;
     return false;
@@ -235,18 +350,43 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
               <FileSpreadsheet className="h-6 w-6 text-green-600" />
             </div>
             <div>
-              <h3 className="text-lg font-semibold">Connect Google Sheets</h3>
+              <h3 className="text-lg font-semibold">Prospect List Source</h3>
               <p className="text-sm text-muted-foreground">
-                Import your prospect list from Google Sheets
+                Choose where the agent should load prospects from
               </p>
             </div>
           </div>
 
-          {checkingConnection ? (
+          <div className="mb-6 grid gap-3 md:grid-cols-2">
+            <button
+              onClick={() => setDataSource('google_sheets')}
+              className={`rounded-lg border p-4 text-left transition-all ${
+                dataSource === 'google_sheets'
+                  ? 'border-primary bg-primary/5'
+                  : 'hover:border-primary/50'
+              }`}
+            >
+              <div className="font-semibold">Google Sheets</div>
+              <div className="text-xs text-muted-foreground">Use your Google account</div>
+            </button>
+            <button
+              onClick={() => setDataSource('csv_upload')}
+              className={`rounded-lg border p-4 text-left transition-all ${
+                dataSource === 'csv_upload'
+                  ? 'border-primary bg-primary/5'
+                  : 'hover:border-primary/50'
+              }`}
+            >
+              <div className="font-semibold">Upload CSV</div>
+              <div className="text-xs text-muted-foreground">Upload a leads file</div>
+            </button>
+          </div>
+
+          {dataSource === 'google_sheets' && checkingConnection ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
-          ) : !sheetsConnected ? (
+          ) : dataSource === 'google_sheets' && !sheetsConnected ? (
             <div className="space-y-4">
               <div className="rounded-lg bg-muted/50 p-6 text-center">
                 <FileSpreadsheet className="mx-auto mb-4 h-16 w-16 text-muted-foreground" />
@@ -272,21 +412,21 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                 </Button>
               </div>
 
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
-                <h4 className="mb-2 font-semibold text-blue-900">Required Sheet Format:</h4>
-                <div className="space-y-2 text-sm text-blue-800">
-                  <p>Your Google Sheet should have these columns:</p>
-                  <ul className="list-inside list-disc space-y-1 pl-4">
-                    <li><strong>Business Name</strong> (Required)</li>
-                    <li><strong>Phone Number</strong> (Required - format: +1-555-1234)</li>
-                    <li>Industry (Optional)</li>
-                    <li>Contact Person (Optional)</li>
-                    <li>Description (Optional)</li>
-                  </ul>
-                </div>
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+              <h4 className="mb-2 font-semibold text-blue-900">Required Sheet Format:</h4>
+              <div className="space-y-2 text-sm text-blue-800">
+                <p>Your Google Sheet should have these columns:</p>
+                <ul className="list-inside list-disc space-y-1 pl-4">
+                  <li><strong>business_name</strong> (Required)</li>
+                  <li><strong>business_phone</strong> (Required - format: +1-555-1234)</li>
+                  <li><strong>business_industry</strong> (Required)</li>
+                  <li><strong>business_contact_person</strong> (Required)</li>
+                  <li><strong>business_description</strong> (Required)</li>
+                </ul>
               </div>
             </div>
-          ) : (
+            </div>
+          ) : dataSource === 'google_sheets' ? (
             <div className="space-y-4">
               <div className="rounded-lg border border-green-200 bg-green-50 p-4">
                 <div className="flex items-center gap-2 text-green-800">
@@ -303,7 +443,15 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                 </label>
                 <select
                   value={selectedSheet}
-                  onChange={(e) => setSelectedSheet(e.target.value)}
+                  onChange={(e) => {
+                    const sheetId = e.target.value;
+                    setSelectedSheet(sheetId);
+                    setSelectedSheetName('');
+                    setSheetTabs([]);
+                    if (sheetId) {
+                      loadSheetTabs(sheetId);
+                    }
+                  }}
                   className="w-full rounded-lg border px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                   <option value="">Choose a sheet...</option>
@@ -320,6 +468,33 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                 </p>
               </div>
 
+              {selectedSheet && (
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Select Worksheet Tab
+                  </label>
+                  <select
+                    value={selectedSheetName}
+                    onChange={(e) => setSelectedSheetName(e.target.value)}
+                    className="w-full rounded-lg border px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="">Choose a tab...</option>
+                    {sheetTabs.map((sheet) => (
+                      <option key={sheet.id} value={sheet.title}>
+                        {sheet.title}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {loadingSheetInfo
+                      ? 'Loading sheet tabs...'
+                      : sheetTabs.length === 0
+                      ? 'No tabs found. Ensure your spreadsheet has at least one tab.'
+                      : 'Select the tab with your prospect list.'}
+                  </p>
+                </div>
+              )}
+
               <div className="rounded-lg bg-muted/50 p-4">
                 <h4 className="mb-2 text-sm font-semibold">Output Call Log</h4>
                 <p className="text-sm text-muted-foreground">
@@ -327,6 +502,69 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                   <br />
                   All call outcomes, notes, and follow-ups will be recorded there.
                 </p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium">
+                  Upload CSV
+                </label>
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsDragOver(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsDragOver(false);
+                  }}
+                  onDrop={handleCsvDrop}
+                  onClick={() => document.getElementById('csv-upload-input')?.click()}
+                  className={`cursor-pointer rounded-lg border-2 border-dashed px-4 py-6 text-center text-sm transition-colors ${
+                    isDragOver ? 'border-primary bg-primary/5' : 'border-muted'
+                  }`}
+                >
+                  <div className="font-medium">Drag & drop your CSV here</div>
+                  <div className="text-xs text-muted-foreground">or click to upload</div>
+                </div>
+                <input
+                  id="csv-upload-input"
+                  type="file"
+                  accept=".csv"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleCsvUpload(file);
+                  }}
+                  className="hidden"
+                />
+                {uploadingCsv && (
+                  <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Uploading...
+                  </div>
+                )}
+                {csvError && (
+                  <div className="mt-2 rounded-lg bg-destructive/10 p-2 text-sm text-destructive">
+                    {csvError}
+                  </div>
+                )}
+                {uploadedCsv && (
+                  <div className="mt-2 rounded-lg border p-2 text-sm">
+                    Uploaded: <strong>{uploadedCsv.name}</strong> ({uploadedCsv.rowCount} leads)
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <h4 className="mb-2 font-semibold text-blue-900">CSV Format:</h4>
+                <div className="space-y-2 text-sm text-blue-800">
+                  <p>Required columns:</p>
+                  <p><strong>business_name</strong>, <strong>business_phone</strong></p>
+                  <p>Also required: business_industry, business_contact_person, business_description</p>
+                </div>
               </div>
             </div>
           )}

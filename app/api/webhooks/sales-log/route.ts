@@ -54,7 +54,9 @@ export async function POST(request: NextRequest) {
     const settings = agent.settings as any;
     const salesConfig = settings?.salesAgentConfig;
 
-    if (!salesConfig?.inputSheetId) {
+    const dataSource = salesConfig?.dataSource || 'google_sheets';
+
+    if (dataSource === 'google_sheets' && !salesConfig?.inputSheetId) {
       return NextResponse.json(
         { error: 'Sales agent not configured with Google Sheets' },
         { status: 400 }
@@ -75,33 +77,39 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get admin user for this tenant to get Google tokens
-    const { data: userTenant } = await supabase
-      .from('user_tenants')
-      .select('user_id')
-      .eq('tenant_id', tenant.id)
-      .eq('role', 'admin')
-      .limit(1)
-      .single();
+    let accessToken: string | null = null;
 
-    if (!userTenant) {
-      return NextResponse.json(
-        { error: 'No admin user found for tenant' },
-        { status: 404 }
-      );
-    }
+    if (dataSource === 'google_sheets') {
+      // Get admin user for this tenant to get Google tokens
+      const { data: userTenant } = await supabase
+        .from('user_tenants')
+        .select('user_id')
+        .eq('tenant_id', tenant.id)
+        .eq('role', 'admin')
+        .limit(1)
+        .single();
 
-    const { data: tokenData } = await supabase
-      .from('google_auth_tokens')
-      .select('access_token')
-      .eq('user_id', userTenant.user_id)
-      .single();
+      if (!userTenant) {
+        return NextResponse.json(
+          { error: 'No admin user found for tenant' },
+          { status: 404 }
+        );
+      }
 
-    if (!tokenData?.access_token) {
-      return NextResponse.json(
-        { error: 'Google Sheets not connected' },
-        { status: 401 }
-      );
+      const { data: tokenData } = await supabase
+        .from('google_auth_tokens')
+        .select('access_token')
+        .eq('user_id', userTenant.user_id)
+        .single();
+
+      if (!tokenData?.access_token) {
+        return NextResponse.json(
+          { error: 'Google Sheets not connected' },
+          { status: 401 }
+        );
+      }
+
+      accessToken = tokenData.access_token;
     }
 
     // Format duration (convert seconds to "Xm Ys" format)
@@ -128,36 +136,42 @@ export async function POST(request: NextRequest) {
         .join('. '),
     };
 
-    // Append to call log sheet
-    const callLogSheetName = salesConfig.outputSheetName || 'Sales Agent - Call Log';
-    await appendCallLog(
-      salesConfig.inputSheetId,
-      callLogSheetName,
-      logEntry,
-      tokenData.access_token
-    );
+    let loggedToSheet: string | null = null;
 
-    // Update prospect status in input sheet
-    const statusMap: { [key: string]: string } = {
-      interested: 'Interested',
-      not_interested: 'Not Interested',
-      callback_requested: 'Callback',
-      sent_information: 'Info Sent',
-      voicemail: 'Voicemail',
-      no_answer: 'No Answer',
-      do_not_call: 'Do Not Call',
-    };
-
-    const status = statusMap[call_outcome] || 'Called';
-
-    if (salesConfig.inputSheetName) {
-      await updateProspectStatus(
+    if (dataSource === 'google_sheets' && accessToken) {
+      // Append to call log sheet
+      const callLogSheetName = salesConfig.outputSheetName || 'Sales Agent - Call Log';
+      await appendCallLog(
         salesConfig.inputSheetId,
-        salesConfig.inputSheetName,
-        phone_number,
-        status,
-        tokenData.access_token
+        callLogSheetName,
+        logEntry,
+        accessToken
       );
+
+      // Update prospect status in input sheet
+      const statusMap: { [key: string]: string } = {
+        interested: 'Interested',
+        not_interested: 'Not Interested',
+        callback_requested: 'Callback',
+        sent_information: 'Info Sent',
+        voicemail: 'Voicemail',
+        no_answer: 'No Answer',
+        do_not_call: 'Do Not Call',
+      };
+
+      const status = statusMap[call_outcome] || 'Called';
+
+      if (salesConfig.inputSheetName) {
+        await updateProspectStatus(
+          salesConfig.inputSheetId,
+          salesConfig.inputSheetName,
+          phone_number,
+          status,
+          accessToken
+        );
+      }
+
+      loggedToSheet = callLogSheetName;
     }
 
     // Also log the call in our database
@@ -174,7 +188,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       message: 'Call logged successfully',
-      logged_to_sheet: callLogSheetName,
+      logged_to_sheet: loggedToSheet,
     });
   } catch (error: any) {
     console.error('Error logging sales call:', error);

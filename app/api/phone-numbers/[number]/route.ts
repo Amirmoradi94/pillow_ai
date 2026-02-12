@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPhoneNumber, updatePhoneNumber, deletePhoneNumber } from '@/lib/retell/client';
+import { requireAuth } from '@/lib/supabase/auth';
+import { createServerClient } from '@/lib/supabase/server';
 
 // GET /api/phone-numbers/[number] - Get a specific phone number
 export async function GET(
@@ -7,6 +9,11 @@ export async function GET(
   { params }: { params: { number: string } }
 ) {
   try {
+    const user = await requireAuth();
+    if (!user.tenantId) {
+      return NextResponse.json({ error: 'Tenant not found' }, { status: 400 });
+    }
+
     const phoneNumber = decodeURIComponent(params.number);
 
     const { data, error } = await getPhoneNumber(phoneNumber);
@@ -31,6 +38,14 @@ export async function PATCH(
   { params }: { params: { number: string } }
 ) {
   try {
+    const user = await requireAuth();
+    if (!user.tenantId) {
+      return NextResponse.json({ error: 'Tenant not found' }, { status: 400 });
+    }
+    if (user.role === 'client') {
+      return NextResponse.json({ error: 'Only admins can update phone numbers' }, { status: 403 });
+    }
+
     const phoneNumber = decodeURIComponent(params.number);
     const body = await request.json();
     const { inboundAgentId, outboundAgentId, nickname, inboundWebhookUrl } = body;
@@ -44,6 +59,36 @@ export async function PATCH(
 
     if (error) {
       return NextResponse.json({ error }, { status: 500 });
+    }
+
+    const supabase = await createServerClient();
+    const { data: existing } = await supabase
+      .from('phone_numbers')
+      .select('id')
+      .eq('tenant_id', user.tenantId)
+      .eq('number', phoneNumber)
+      .single();
+
+    if (existing?.id) {
+      await supabase
+        .from('phone_numbers')
+        .update({
+          inbound_agent_id: inboundAgentId ?? null,
+          outbound_agent_id: outboundAgentId ?? null,
+          nickname: nickname ?? null,
+        })
+        .eq('id', existing.id);
+    } else {
+      await supabase.from('phone_numbers').insert({
+        tenant_id: user.tenantId,
+        number: phoneNumber,
+        status: 'active',
+        source: 'purchased',
+        created_by: user.id,
+        inbound_agent_id: inboundAgentId || null,
+        outbound_agent_id: outboundAgentId || null,
+        agent_id: null,
+      });
     }
 
     return NextResponse.json({ phoneNumber: data });
@@ -62,6 +107,14 @@ export async function DELETE(
   { params }: { params: { number: string } }
 ) {
   try {
+    const user = await requireAuth();
+    if (!user.tenantId) {
+      return NextResponse.json({ error: 'Tenant not found' }, { status: 400 });
+    }
+    if (user.role === 'client') {
+      return NextResponse.json({ error: 'Only admins can delete phone numbers' }, { status: 403 });
+    }
+
     const phoneNumber = decodeURIComponent(params.number);
 
     const { error } = await deletePhoneNumber(phoneNumber);
@@ -69,6 +122,13 @@ export async function DELETE(
     if (error) {
       return NextResponse.json({ error }, { status: 500 });
     }
+
+    const supabase = await createServerClient();
+    await supabase
+      .from('phone_numbers')
+      .delete()
+      .eq('tenant_id', user.tenantId)
+      .eq('number', phoneNumber);
 
     return NextResponse.json({ success: true }, { status: 204 });
   } catch (error) {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '@/types/supabase';
+import { PLAN_CONFIG } from '@/lib/trial-utils';
 
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
@@ -80,6 +81,7 @@ export async function POST(request: NextRequest) {
             period_starts_at: periodStart.toISOString(),
             period_ends_at: periodEnd.toISOString(),
             trial_ends_at: null, // Clear trial
+            features: PLAN_CONFIG[planId as keyof typeof PLAN_CONFIG]?.features || {},
           })
           .eq('id', tenantId);
 
@@ -121,6 +123,7 @@ export async function POST(request: NextRequest) {
             period_starts_at: periodStart.toISOString(),
             period_ends_at: periodEnd.toISOString(),
             subscription_status: 'active',
+            features: PLAN_CONFIG[planId as keyof typeof PLAN_CONFIG]?.features || {},
           })
           .eq('id', tenantId);
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSpreadsheetInfo } from '@/lib/google-sheets';
-import { createClient } from '@/lib/supabase/server';
+import { createServerClient } from '@/lib/supabase/server';
 
 /**
  * Get spreadsheet metadata and sheet names
@@ -11,7 +11,7 @@ export async function GET(
   { params }: { params: { spreadsheetId: string } }
 ) {
   try {
-    const supabase = await createClient();
+    const supabase = await createServerClient();
     const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {

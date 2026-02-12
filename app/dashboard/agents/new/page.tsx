@@ -224,6 +224,12 @@ export default function NewAgentPage() {
     setLoading(true);
     setError('');
 
+    if (!selectedPhoneNumber) {
+      setError('Phone number is required to create an agent.');
+      setLoading(false);
+      return;
+    }
+
     try {
       // Step 1: Upload knowledge base if files are provided
       let knowledgeBaseId = null;
@@ -255,24 +261,30 @@ export default function NewAgentPage() {
 
       // Don't generate tools on client - will be done on server with API keys
 
+      const agentSettings: Record<string, any> = {
+        voice_model: selectedVoice || selectedTemplate.suggestedVoice,
+        language: selectedTemplate.language,
+        response_speed: 'medium',
+        ambient_sound: backgroundSound !== 'none' ? backgroundSound : undefined,
+        ambient_sound_volume: backgroundSound !== 'none' ? backgroundSoundVolume : undefined,
+      };
+
+      if (selectedTemplate.id === 'sales-agent-outbound' && salesAgentConfig) {
+        agentSettings.salesAgentConfig = salesAgentConfig;
+      }
+
       const response = await fetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: selectedTemplate.name,
           script: agentPrompt,
-          settings: {
-            voice_model: selectedVoice || selectedTemplate.suggestedVoice,
-            language: selectedTemplate.language,
-            response_speed: 'medium',
-            ambient_sound: backgroundSound !== 'none' ? backgroundSound : undefined,
-            ambient_sound_volume: backgroundSound !== 'none' ? backgroundSoundVolume : undefined,
-          },
+          settings: agentSettings,
           template_id: selectedTemplate.id,
           knowledge_base_ids: knowledgeBaseId ? [knowledgeBaseId] : [],
           tools_config: selectedTemplate.toolsConfig,
           transfer_phone: transferPhone || undefined,
-          phone_number: selectedPhoneNumber || undefined,
+          phone_number: selectedPhoneNumber,
         }),
       });
 
@@ -646,10 +658,10 @@ export default function NewAgentPage() {
                   </div>
                 )}
 
-                {/* Phone Number (Optional) */}
+                {/* Phone Number (Required) */}
                 <div>
                   <label className="mb-2 block text-sm font-medium">
-                    Phone Number (Optional)
+                    Phone Number (Required)
                   </label>
                   <button
                     type="button"
@@ -678,7 +690,8 @@ export default function NewAgentPage() {
                     </div>
                   </button>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Phone number for making and receiving calls with this agent
+                    Phone number for making and receiving calls with this agent. If you don’t have one, set it up in{' '}
+                    <Link href="/dashboard/onboarding/phone-number" className="underline">Phone Numbers</Link>.
                   </p>
                 </div>
 
@@ -705,7 +718,7 @@ export default function NewAgentPage() {
                 <div className="flex gap-3 pt-4">
                   <Button
                     onClick={handleCreateAgent}
-                    disabled={loading}
+                    disabled={loading || !selectedPhoneNumber}
                     className="flex-1"
                     size="lg"
                   >

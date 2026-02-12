@@ -2,12 +2,13 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, Mic, PhoneCall, Settings, Users, Calendar, ArrowUpRight, Info } from 'lucide-react';
+import { LayoutDashboard, Mic, PhoneCall, Phone, Settings, Users, Calendar, ArrowUpRight, Info } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 const navItems = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Agents', href: '/dashboard/agents', icon: Mic },
+  { name: 'Phone Numbers', href: '/dashboard/onboarding/phone-number', icon: Phone },
   { name: 'Calls', href: '/dashboard/calls', icon: PhoneCall },
   { name: 'Calendar', href: '/dashboard/calendar', icon: Calendar },
   { name: 'Team', href: '/dashboard/team', icon: Users },

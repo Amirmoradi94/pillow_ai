@@ -28,6 +28,7 @@ const plans: PricingPlan[] = [
     features: [
       '200 minutes/month (~67 calls)',
       '1 AI voice agent',
+      '1 phone number',
       '5 preset AI voices',
       'Basic call analytics',
       'Email support',
@@ -46,6 +47,7 @@ const plans: PricingPlan[] = [
     features: [
       '750 minutes/month (~250 calls)',
       '3 AI voice agents',
+      '3 phone numbers',
       'Custom voice cloning',
       'Advanced analytics & reporting',
       'Priority support',
@@ -65,6 +67,7 @@ const plans: PricingPlan[] = [
     features: [
       'Unlimited minutes',
       'Unlimited AI agents',
+      '10 phone numbers',
       'Custom voice cloning',
       'Real-time dashboard',
       'Dedicated account manager',
