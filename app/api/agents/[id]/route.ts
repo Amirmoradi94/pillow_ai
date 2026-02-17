@@ -66,6 +66,21 @@ export async function PUT(
     let tools = settings?.tools || [];
 
     if (settings?.tools_config) {
+      const needsCalendarWebhook =
+        Boolean(settings.tools_config.booking) || Boolean(settings.tools_config.availability);
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || '';
+      const isLocalUrl = /localhost|127\.0\.0\.1/i.test(appUrl);
+
+      if (needsCalendarWebhook && isLocalUrl) {
+        return NextResponse.json(
+          {
+            error:
+              'Calendar tools require a public NEXT_PUBLIC_APP_URL. Retell cannot call localhost webhooks.',
+          },
+          { status: 400 }
+        );
+      }
+
       tools = generateTools(settings.tools_config, {
         calApiKey: process.env.CAL_API_KEY,
         calEventTypeId: cal_event_type_id,
@@ -81,6 +96,7 @@ export async function PUT(
       {
         name,
         script,
+        tools,
         voice_model: settings?.voice_model,
         language: settings?.language,
         response_speed: settings?.response_speed,

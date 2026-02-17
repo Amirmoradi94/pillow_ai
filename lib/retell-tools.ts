@@ -12,7 +12,7 @@ export interface RetellTool {
 export const endCallTool = (): RetellTool => ({
   type: 'end_call',
   name: 'end_conversation',
-  description: 'End the call when the user\'s request is fully handled or they ask to hang up',
+  description: 'End the call only when the user explicitly asks to hang up, says goodbye, or clearly confirms they need nothing else',
 });
 
 // 2. TRANSFER CALL - Transfer to phone number or agent

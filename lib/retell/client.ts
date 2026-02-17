@@ -87,6 +87,7 @@ export async function updateRetellAgent(
   config: {
     name?: string;
     script?: string;
+    tools?: any[];
     voice_model?: string;
     language?: string;
     response_speed?: 'fast' | 'medium' | 'slow';
@@ -96,12 +97,18 @@ export async function updateRetellAgent(
   llmId?: string
 ) {
   try {
-    // If script is provided and we have llmId, update the LLM first
-    if (config.script && llmId) {
+    // If script/tools are provided and we have llmId, update the LLM first
+    if (llmId && (config.script !== undefined || config.tools !== undefined)) {
+      const llmUpdatePayload: any = {};
+      if (config.script !== undefined) {
+        llmUpdatePayload.general_prompt = config.script;
+      }
+      if (config.tools !== undefined) {
+        llmUpdatePayload.general_tools = config.tools;
+      }
+
       // @ts-ignore
-      await client.llm.update(llmId, {
-        general_prompt: config.script,
-      });
+      await client.llm.update(llmId, llmUpdatePayload);
     }
 
     // Update agent settings

@@ -5,7 +5,6 @@ import { useRouter, useParams } from 'next/navigation';
 import { ArrowLeft, Save, Trash2, Plus, X, Settings, Phone, Zap, PhoneCall, PhoneOff, Mic, MicOff, Volume2, Play, Pause } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import { RetellTools } from '@/lib/retell-tools';
 import { BACKGROUND_SOUNDS, DEFAULT_BACKGROUND_SOUND, DEFAULT_BACKGROUND_SOUND_VOLUME, type BackgroundSound } from '@/lib/background-sounds';
 
 interface Voice {
@@ -42,6 +41,41 @@ interface ToolConfig {
   enabled: boolean;
   config?: any;
 }
+
+const hasToolEnabled = (tools: any[], toolType: string): boolean => {
+  if (!Array.isArray(tools)) return false;
+
+  return tools.some((tool: any) => {
+    const type = tool?.type;
+    const name = tool?.name;
+    const url = tool?.url;
+
+    switch (toolType) {
+      case 'end_call':
+        return type === 'end_call';
+      case 'book_appointment':
+        return (
+          type === 'book_appointment_cal' ||
+          (type === 'custom' &&
+            (name === 'book_appointment' ||
+              (typeof url === 'string' && url.includes('/api/calendar/booking/retell'))))
+        );
+      case 'check_availability':
+        return (
+          type === 'check_availability_cal' ||
+          (type === 'custom' &&
+            (name === 'check_availability' ||
+              (typeof url === 'string' && url.includes('/api/calendar/availability/retell'))))
+        );
+      case 'send_sms':
+        return type === 'send_sms';
+      case 'transfer_call':
+        return type === 'transfer_call' || type === 'bridge_transfer';
+      default:
+        return type === toolType;
+    }
+  });
+};
 
 export default function AgentEditPage() {
   const router = useRouter();
@@ -98,7 +132,8 @@ export default function AgentEditPage() {
   const [callTranscript, setCallTranscript] = useState<string[]>([]);
   const [callStatus, setCallStatus] = useState<string>('');
   const retellWebClientRef = useRef<any>(null);
-  const lastTranscriptRef = useRef<Map<string, string>>(new Map());
+  const liveTranscriptRef = useRef<Map<string, string>>(new Map());
+  const committedTranscriptRef = useRef<Map<string, string>>(new Map());
 
   // Available tools
   const [availableTools, setAvailableTools] = useState<ToolConfig[]>([
@@ -262,8 +297,9 @@ export default function AgentEditPage() {
       const existingTools = agentData.settings?.tools || [];
       setAvailableTools(prev => prev.map(tool => ({
         ...tool,
-        enabled: existingTools.some((t: any) => t.type === tool.type)
+        enabled: hasToolEnabled(existingTools, tool.type)
       })));
+      setTransferPhone(agentData.settings?.transfer_phone || '');
 
     } catch (err: any) {
       setError(err.message);
@@ -337,46 +373,24 @@ export default function AgentEditPage() {
     setSuccess('');
 
     try {
-      // Generate tools based on enabled state
-      const tools: any[] = [];
+      const enabledTools = new Set(
+        availableTools.filter((tool) => tool.enabled).map((tool) => tool.type)
+      );
+      const toolsConfig = {
+        endCall: enabledTools.has('end_call'),
+        booking: enabledTools.has('book_appointment'),
+        availability: enabledTools.has('check_availability'),
+        sms: enabledTools.has('send_sms'),
+        transfer: enabledTools.has('transfer_call'),
+      };
 
-      availableTools.forEach(tool => {
-        if (!tool.enabled) return;
-
-        switch (tool.type) {
-          case 'end_call':
-            tools.push(RetellTools.endCall());
-            break;
-          case 'book_appointment':
-            tools.push(RetellTools.bookCalendarAppointment({
-              name: 'book_appointment',
-              description: 'Book an appointment for the customer',
-              apiUrl: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
-              agentId: agentId,
-            }));
-            break;
-          case 'check_availability':
-            tools.push(RetellTools.checkCalendarAvailability({
-              name: 'check_availability',
-              description: 'Check available appointment slots',
-              apiUrl: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
-              agentId: agentId,
-            }));
-            break;
-          case 'send_sms':
-            tools.push(RetellTools.appointmentConfirmationSms());
-            break;
-          case 'transfer_call':
-            if (transferPhone) {
-              tools.push(RetellTools.transferCall({
-                name: 'transfer_to_staff',
-                description: 'Transfer call to staff member',
-                transferTo: transferPhone,
-              }));
-            }
-            break;
-        }
-      });
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || '';
+      const isLocalAppUrl = /localhost|127\.0\.0\.1/i.test(appUrl);
+      if ((toolsConfig.booking || toolsConfig.availability) && isLocalAppUrl) {
+        throw new Error(
+          'Calendar tools require a public NEXT_PUBLIC_APP_URL (not localhost). Use your deployed URL or a tunnel (e.g. ngrok), then save again.'
+        );
+      }
 
       const response = await fetch(`/api/agents/${agentId}`, {
         method: 'PUT',
@@ -388,7 +402,7 @@ export default function AgentEditPage() {
             voice_model: voiceModel,
             language,
             response_speed: responseSpeed,
-            tools,
+            tools_config: toolsConfig,
             ambient_sound: backgroundSound !== 'none' ? backgroundSound : undefined,
             ambient_sound_volume: backgroundSound !== 'none' ? backgroundSoundVolume : undefined,
           },
@@ -458,11 +472,28 @@ export default function AgentEditPage() {
     ));
   };
 
+  const commitTranscriptForRole = (role: 'user' | 'agent') => {
+    const text = (liveTranscriptRef.current.get(role) || '').trim();
+    if (!text) return;
+
+    const lastCommitted = committedTranscriptRef.current.get(role);
+    if (lastCommitted === text) return;
+
+    committedTranscriptRef.current.set(role, text);
+    setCallTranscript(prev => [
+      ...prev,
+      role === 'user' ? `👤 You: ${text}` : `🤖 Agent: ${text}`,
+    ]);
+    liveTranscriptRef.current.delete(role);
+  };
+
   // Web call functions
   const startCall = async () => {
     setIsConnecting(true);
     setError('');
     setCallTranscript([]);
+    liveTranscriptRef.current.clear();
+    committedTranscriptRef.current.clear();
 
     try {
       // Dynamically import the SDK (client-side only)
@@ -492,51 +523,41 @@ export default function AgentEditPage() {
       });
 
       webClient.on('call_ended', () => {
+        commitTranscriptForRole('user');
+        commitTranscriptForRole('agent');
         setCallStatus('Call ended');
         setIsCallActive(false);
         setCallTranscript(prev => [...prev, '📞 Call ended']);
+        liveTranscriptRef.current.clear();
       });
 
       webClient.on('agent_start_talking', () => {
         setCallStatus('Agent speaking...');
+        // User utterance is complete when agent starts replying
+        commitTranscriptForRole('user');
       });
 
       webClient.on('agent_stop_talking', () => {
         setCallStatus('Listening...');
-        // Agent finished speaking - commit the complete utterance
-        const lastAgentText = lastTranscriptRef.current.get('agent');
-        if (lastAgentText) {
-          setCallTranscript(prev => [...prev, `🤖 Agent: ${lastAgentText}`]);
-          lastTranscriptRef.current.delete('agent');
-        }
+        // Agent utterance is complete when agent stops talking
+        commitTranscriptForRole('agent');
       });
 
       webClient.on('update', (update: any) => {
-        // Track the latest transcript for each speaker
+        // Retell sends streaming transcript deltas in this event; keep latest text per role.
         if (update.transcript && update.transcript.length > 0) {
-          const currentTranscriptMap = new Map<string, string>();
-
-          // Process all transcript entries and keep only the latest for each role
           update.transcript.forEach((entry: any) => {
-            currentTranscriptMap.set(entry.role, entry.content);
+            if (entry?.role && typeof entry.content === 'string') {
+              liveTranscriptRef.current.set(entry.role, entry.content);
+            }
           });
+        }
+      });
 
-          // Check if user finished speaking (agent started or user content changed significantly)
-          const previousUserText = lastTranscriptRef.current.get('user');
-          const currentUserText = currentTranscriptMap.get('user');
-
-          if (previousUserText && currentUserText &&
-              previousUserText !== currentUserText &&
-              !currentUserText.startsWith(previousUserText)) {
-            // User's previous utterance is complete
-            setCallTranscript(prev => [...prev, `👤 You: ${previousUserText}`]);
-          } else if (previousUserText && !currentUserText) {
-            // User stopped speaking
-            setCallTranscript(prev => [...prev, `👤 You: ${previousUserText}`]);
-          }
-
-          // Update the reference with current state
-          lastTranscriptRef.current = currentTranscriptMap;
+      webClient.on('metadata', (metadata: any) => {
+        const disconnectedReason = metadata?.call?.disconnection_reason || metadata?.disconnection_reason;
+        if (disconnectedReason) {
+          setCallTranscript(prev => [...prev, `ℹ️ Disconnect reason: ${disconnectedReason}`]);
         }
       });
 
@@ -563,22 +584,16 @@ export default function AgentEditPage() {
 
   const endCall = () => {
     // Commit any remaining transcript before ending
-    const lastUserText = lastTranscriptRef.current.get('user');
-    const lastAgentText = lastTranscriptRef.current.get('agent');
-
-    if (lastUserText) {
-      setCallTranscript(prev => [...prev, `👤 You: ${lastUserText}`]);
-    }
-    if (lastAgentText) {
-      setCallTranscript(prev => [...prev, `🤖 Agent: ${lastAgentText}`]);
-    }
+    commitTranscriptForRole('user');
+    commitTranscriptForRole('agent');
 
     if (retellWebClientRef.current) {
       retellWebClientRef.current.stopCall();
       retellWebClientRef.current = null;
     }
 
-    lastTranscriptRef.current.clear();
+    liveTranscriptRef.current.clear();
+    committedTranscriptRef.current.clear();
     setIsCallActive(false);
     setIsConnecting(false);
     setCallStatus('');
