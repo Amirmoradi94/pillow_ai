@@ -63,8 +63,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Tenant ID is required for super admins' }, { status: 400 });
     }
 
-    // Generate tools from config with server-side credentials
-    const tools = tools_config ? generateTools(tools_config, {
+    const calendarProviderId = settings?.calendar_provider_id as string | undefined;
+    if (calendarProviderId) {
+      const { data: provider } = await supabase
+        .from('calendar_providers')
+        .select('id')
+        .eq('id', calendarProviderId)
+        .eq('tenant_id', targetTenantId)
+        .single();
+
+      if (!provider) {
+        return NextResponse.json(
+          { error: 'Selected calendar provider is invalid for this tenant' },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Generate initial tools from config with server-side credentials.
+    // Some tools (calendar/current datetime) require internal agent ID and are finalized after DB insert.
+    const initialTools = tools_config ? generateTools(tools_config, {
       calApiKey: process.env.CAL_API_KEY,
       calEventTypeId: cal_event_type_id,
       transferPhone: transfer_phone,
@@ -77,8 +95,14 @@ export async function POST(request: NextRequest) {
       voice_model: settings?.voice_model,
       language: settings?.language,
       response_speed: settings?.response_speed,
+      voice_emotion: settings?.voice_emotion,
+      interruption_sensitivity: settings?.interruption_sensitivity,
+      enable_backchannel: settings?.enable_backchannel,
+      backchannel_frequency: settings?.backchannel_frequency,
+      backchannel_words: settings?.backchannel_words,
+      end_call_after_silence_ms: settings?.end_call_after_silence_ms,
       knowledge_base_ids: knowledge_base_ids || [],
-      tools: tools || [],
+      tools: initialTools || [],
       ambient_sound: settings?.ambient_sound,
       ambient_sound_volume: settings?.ambient_sound_volume,
     });
@@ -100,7 +124,7 @@ export async function POST(request: NextRequest) {
             ...settings,
             template_id,
             knowledge_base_ids,
-            tools,
+            tools: initialTools,
           },
           retell_agent_id: retellResult.data.agent_id,
           retell_llm_id: retellResult.data.llm_id,
@@ -113,6 +137,46 @@ export async function POST(request: NextRequest) {
     if (error) {
       console.error('Error creating agent in database:', error);
       return NextResponse.json({ error: 'Failed to create agent' }, { status: 500 });
+    }
+
+    // Finalize tools now that internal agent ID exists.
+    if (tools_config) {
+      const finalizedTools = generateTools(tools_config, {
+        calApiKey: process.env.CAL_API_KEY,
+        calEventTypeId: cal_event_type_id,
+        transferPhone: transfer_phone,
+        agentId: data.id,
+      });
+
+      const toolsChanged = JSON.stringify(finalizedTools) !== JSON.stringify(initialTools);
+      if (toolsChanged) {
+        const retellUpdate = await updateRetellAgent(
+          data.retell_agent_id,
+          { tools: finalizedTools },
+          data.retell_llm_id
+        );
+
+        if (!retellUpdate.error) {
+          const updatedSettings = {
+            ...(data.settings as Record<string, any>),
+            tools: finalizedTools,
+          };
+
+          const { data: refreshedAgent } = await supabase
+            .from('voice_agents')
+            .update({
+              settings: updatedSettings,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', data.id)
+            .select()
+            .single();
+
+          return NextResponse.json({ agent: refreshedAgent || { ...data, settings: updatedSettings } }, { status: 201 });
+        }
+
+        console.error('Failed to finalize tools after agent creation:', retellUpdate.error);
+      }
     }
 
     return NextResponse.json({ agent: data }, { status: 201 });

@@ -2,8 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import Image from 'next/image';
 import { LayoutDashboard, Mic, PhoneCall, Phone, Settings, Users, Calendar, ArrowUpRight, Info } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import logoPillow from '@/app/assets/logo_pillow.png';
 
 const navItems = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -15,7 +17,7 @@ const navItems = [
   { name: 'Settings', href: '/dashboard/settings', icon: Settings },
 ];
 
-export function ClientSidebar({ tenantName }: { tenantName?: string }) {
+export function ClientSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [userData, setUserData] = useState<any>(null);
@@ -41,17 +43,13 @@ export function ClientSidebar({ tenantName }: { tenantName?: string }) {
       {/* Header with premium design */}
       <div className="border-b border-white/10 p-6">
         <div className="flex items-center gap-3">
-          <div className="relative flex h-10 w-10 items-center justify-center rounded-xl gradient-primary shadow-glow">
-            <Mic className="h-5 w-5 text-primary-foreground" />
-            <div className="absolute inset-0 rounded-xl bg-white/20 blur-sm" />
-          </div>
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-            Pillow AI
-          </h1>
+          <Image
+            src={logoPillow}
+            alt="Pillow AI"
+            className="h-20 w-full object-contain object-left"
+            priority
+          />
         </div>
-        {tenantName && (
-          <p className="mt-2 text-sm text-muted-foreground truncate">{tenantName}</p>
-        )}
       </div>
 
       {/* Navigation with enhanced styling */}

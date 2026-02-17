@@ -12,6 +12,7 @@ export interface AgentTemplate {
   toolsConfig: {
     booking?: boolean;
     availability?: boolean;
+    currentDateTime?: boolean;
     sms?: boolean;
     transfer?: boolean;
     endCall?: boolean;
@@ -43,6 +44,16 @@ export function generateTools(
   // Add end_call tool - doesn't require configuration
   if (config.endCall) {
     tools.push(RetellTools.endCall());
+  }
+
+  // Add current datetime tool for scheduling flows
+  if ((config.booking || config.availability || config.currentDateTime) && options?.agentId) {
+    tools.push(RetellTools.getCurrentDateTime({
+      name: 'get_current_datetime',
+      description: 'Get exact current date and time in business timezone before interpreting relative dates',
+      apiUrl: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
+      agentId: options.agentId,
+    }));
   }
 
   // Add booking tool using custom calendar system (preferred)
@@ -130,7 +141,21 @@ export function generateTools(
   return tools;
 }
 
-export const agentTemplates: AgentTemplate[] = [
+const DATE_TIME_RESOLUTION_RULES = `
+
+DATE & TIME RESOLUTION RULES (CRITICAL):
+- Never assume a year from memory. Resolve dates against the current date in the business timezone.
+- Before interpreting relative dates/times ("today", "tomorrow", "next Friday", "this afternoon"), call get_current_datetime and use it as the source of truth.
+- If caller gives weekday + month/day (for example "Tuesday, February 17 at 1 PM"), verify they match before confirming.
+- If no year is provided, choose the next future occurrence that matches the caller's intent.
+- If there is any mismatch (weekday/date/year), ask one concise clarification using an exact date:
+  "To confirm, do you mean Tuesday, February 17, 2026 at 1:00 PM?"
+- Before calling check_availability, convert to YYYY-MM-DD and include timezone.
+- Before calling book_appointment, use full ISO 8601 datetime with timezone.
+- Always repeat back the finalized appointment date/time with weekday, month/day/year, local time, and timezone.
+`;
+
+const baseAgentTemplates: AgentTemplate[] = [
   {
     id: 'sales-agent-outbound',
     name: 'Sales Agent (Outbound)',
@@ -139,6 +164,18 @@ export const agentTemplates: AgentTemplate[] = [
     icon: '💼',
     capabilities: ['Outbound Calls', 'Lead Qualification', 'Live Demo', 'CRM Integration', 'Follow-up Automation'],
     prompt: `You are a professional and consultative sales representative named Jordan, calling on behalf of Pillow AI. Your goal is to introduce our AI voice agent solution to businesses and convert cold calls into qualified opportunities.
+
+CALL CONTEXT (SYSTEM PROVIDED):
+- Current local call datetime: {{current_call_datetime}}
+- Current local ISO datetime: {{current_call_local_iso}}
+- Timezone: {{current_call_timezone}}
+- Target business: {{business_name}}
+- Target phone: {{business_phone}}
+- Target industry: {{business_industry}}
+- Contact person: {{business_contact_person}}
+- Business description: {{business_description}}
+
+Use this context naturally. If any value is missing, proceed gracefully without mentioning missing fields.
 
 CALL STRUCTURE:
 
@@ -289,9 +326,11 @@ CRITICAL RULES:
 6. BE TRANSPARENT about being AI when appropriate
 7. PROVIDE VALUE even in rejection (quick tip, free resource)
 8. RESPECT business hours and call limits per your schedule
+9. Before promising a callback date/time, call get_current_datetime and confirm exact weekday, month/day, year, local time, and timezone
 
 Remember: You're not just selling a product - you're demonstrating it live. Every call is a working demo of what Pillow AI can do!`,
     toolsConfig: {
+      currentDateTime: true,
       endCall: true,
       custom: [
         RetellTools.custom({
@@ -360,7 +399,7 @@ Remember: You're not just selling a product - you're demonstrating it live. Ever
         }),
       ],
     },
-    suggestedVoice: '11labs-Josh',
+    suggestedVoice: '11labs-Adrian',
     language: 'en-US',
   },
   {
@@ -640,7 +679,7 @@ Make every caller feel special and excited about their salon visit!`,
         }),
       ],
     },
-    suggestedVoice: '11labs-Matilda',
+    suggestedVoice: '11labs-Adrian',
     language: 'en-US',
   },
   {
@@ -995,7 +1034,7 @@ Remember: You're often the first point of contact in a patient's healthcare jour
         }),
       ],
     },
-    suggestedVoice: '11labs-Jessica',
+    suggestedVoice: '11labs-Adrian',
     language: 'en-US',
   },
   {
@@ -1172,7 +1211,7 @@ Remember: Comfort is critical. Respond urgently to emergencies and provide excel
         }),
       ],
     },
-    suggestedVoice: '11labs-Adam',
+    suggestedVoice: '11labs-Adrian',
     language: 'en-US',
   },
   {
@@ -1373,7 +1412,7 @@ Remember: In a plumbing emergency, you're the calm voice that prevents panic and
         }),
       ],
     },
-    suggestedVoice: '11labs-Josh',
+    suggestedVoice: '11labs-Adrian',
     language: 'en-US',
   },
   {
@@ -1571,7 +1610,7 @@ Remember: You're setting the tone for their entire dining experience. Make them 
         }),
       ],
     },
-    suggestedVoice: '11labs-Matilda',
+    suggestedVoice: '11labs-Adrian',
     language: 'en-US',
   },
   {
@@ -1828,10 +1867,15 @@ Remember: You're building trust and long-term relationships. Be honest, transpar
         }),
       ],
     },
-    suggestedVoice: '11labs-Adam',
+    suggestedVoice: '11labs-Adrian',
     language: 'en-US',
   },
 ];
+
+export const agentTemplates: AgentTemplate[] = baseAgentTemplates.map((template) => ({
+  ...template,
+  prompt: `${template.prompt.trim()}\n${DATE_TIME_RESOLUTION_RULES}`,
+}));
 
 // Get template by ID
 export function getTemplateById(id: string): AgentTemplate | undefined {

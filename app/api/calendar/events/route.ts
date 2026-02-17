@@ -7,6 +7,67 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase/server';
 import { syncEventToGoogle } from '@/lib/google-calendar/sync';
+import { fromZonedTime } from 'date-fns-tz';
+
+function buildSalesSpecificEvents(
+  agentId: string,
+  tenantId: string,
+  settings: any,
+  startDate?: string | null,
+  endDate?: string | null
+) {
+  const sales = settings?.salesAgentConfig;
+  const schedule = sales?.schedule;
+
+  if (!sales || !schedule) return [];
+  if (settings?.template_id !== 'sales-agent-outbound') return [];
+  if (schedule?.type !== 'custom' || schedule?.customMode !== 'specific') return [];
+
+  const timezone = schedule?.timezone || 'UTC';
+  const slots = Array.isArray(schedule?.specificDateTimes) ? schedule.specificDateTimes : [];
+  if (!slots.length) return [];
+
+  const now = new Date();
+  const defaultWindowStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const defaultWindowEnd = new Date(now.getTime() + 120 * 24 * 60 * 60 * 1000);
+  const windowStart = startDate ? new Date(startDate) : defaultWindowStart;
+  const windowEnd = endDate ? new Date(endDate) : defaultWindowEnd;
+
+  return slots
+    .filter((slot: any) => slot?.date && slot?.time)
+    .map((slot: any) => {
+      const startLocal = `${slot.date}T${slot.time}:00`;
+      const startUtc = fromZonedTime(startLocal, timezone);
+      const endUtc = new Date(startUtc.getTime() + 10 * 60 * 1000);
+      return {
+        id: `sales-slot-${agentId}-${slot.date}-${slot.time}`,
+        tenant_id: tenantId,
+        user_id: null,
+        agent_id: agentId,
+        calendar_provider_id: null,
+        title: 'Outbound Sales Call',
+        description: 'Scheduled outbound call (specific slot)',
+        location: null,
+        start_time: startUtc.toISOString(),
+        end_time: endUtc.toISOString(),
+        timezone,
+        all_day: false,
+        status: 'tentative',
+        booked_by: 'voice_agent',
+        attendees: [],
+        metadata: {
+          source: 'sales_schedule_specific_slot',
+          slot_date: slot.date,
+          slot_time: slot.time,
+        },
+        sync_source: 'internal',
+      };
+    })
+    .filter((event) => {
+      const start = new Date(event.start_time);
+      return start >= windowStart && start <= windowEnd;
+    });
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -40,6 +101,8 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get('start_date');
     const endDate = searchParams.get('end_date');
     const userId = searchParams.get('user_id');
+    const agentId = searchParams.get('agent_id');
+    const calendarProviderId = searchParams.get('calendar_provider_id');
 
     // Build query
     let query = supabase
@@ -60,15 +123,43 @@ export async function GET(request: NextRequest) {
       query = query.eq('user_id', userId);
     }
 
+    if (agentId) {
+      query = query.eq('agent_id', agentId);
+    }
+
+    if (calendarProviderId) {
+      query = query.eq('calendar_provider_id', calendarProviderId);
+    }
+
     const { data: events, error } = await query;
 
     if (error) {
       throw error;
     }
 
+    let syntheticSalesEvents: any[] = [];
+    if (agentId) {
+      const { data: agent } = await supabase
+        .from('voice_agents')
+        .select('settings')
+        .eq('tenant_id', userData.tenant_id)
+        .eq('id', agentId)
+        .maybeSingle();
+
+      if (agent?.settings) {
+        syntheticSalesEvents = buildSalesSpecificEvents(
+          agentId,
+          userData.tenant_id,
+          agent.settings,
+          startDate,
+          endDate
+        );
+      }
+    }
+
     return NextResponse.json({
-      events: events || [],
-      total: events?.length || 0,
+      events: [...(events || []), ...syntheticSalesEvents],
+      total: (events?.length || 0) + syntheticSalesEvents.length,
     });
   } catch (error: any) {
     console.error('Events list error:', error);

@@ -3,7 +3,9 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import Image from 'next/image';
 import { ArrowLeft } from 'lucide-react';
+import logoPillow from '@/app/assets/logo_pillow.png';
 
 export default function SignInPage() {
   const [email, setEmail] = useState('');
@@ -63,7 +65,12 @@ export default function SignInPage() {
             <ArrowLeft className="h-4 w-4" />
             Back to home
           </Link>
-          <div className="text-2xl font-bold text-primary">Pillow AI</div>
+          <Image
+            src={logoPillow}
+            alt="Pillow AI"
+            className="h-10 w-auto object-contain"
+            priority
+          />
         </div>
 
         <div className="text-center">

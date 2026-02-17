@@ -1,33 +1,33 @@
 /**
  * Calendar Providers API
- * GET /api/calendar/providers - List user's calendar providers
+ * GET /api/calendar/providers - List tenant calendar providers
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/server';
+import { requireAuth } from '@/lib/supabase/auth';
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-
-    // Check authentication
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      );
+    const user = await requireAuth();
+    if (!user.tenantId) {
+      return NextResponse.json({ error: 'Tenant not found' }, { status: 400 });
     }
+    const supabase = await createServiceClient();
 
-    // Get user's calendar providers
+    // Get all calendar providers in the tenant.
+    // Service client bypasses user-scoped RLS so shared providers appear for all tenant members.
     const { data: providers, error } = await supabase
       .from('calendar_providers')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('tenant_id', user.tenantId)
       .order('created_at', { ascending: false });
 
     if (error) {
+      // Gracefully degrade when PostgREST schema cache is stale/missing this table.
+      if (error.code === 'PGRST205') {
+        return NextResponse.json({ providers: [], total: 0 });
+      }
       throw error;
     }
 

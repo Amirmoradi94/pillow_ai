@@ -213,10 +213,55 @@ export async function getAvailableSlots(params: {
   timezone?: string;
   userIds?: string[];
   agentId?: string;
+  calendarProviderId?: string;
 }): Promise<TimeSlot[]> {
   const supabase = await createServerClient();
 
   let targetUserIds = params.userIds;
+
+  // Highest priority: explicit calendar provider binding
+  if (params.calendarProviderId && !targetUserIds) {
+    const { data: provider } = await supabase
+      .from('calendar_providers')
+      .select('user_id')
+      .eq('id', params.calendarProviderId)
+      .eq('tenant_id', params.tenantId)
+      .eq('status', 'active')
+      .single();
+
+    if (provider?.user_id) {
+      targetUserIds = [provider.user_id];
+    } else {
+      return [];
+    }
+  }
+
+  // Next priority: per-agent provider binding stored in agent settings
+  if (params.agentId && !targetUserIds) {
+    const { data: agent } = await supabase
+      .from('voice_agents')
+      .select('settings')
+      .eq('id', params.agentId)
+      .eq('tenant_id', params.tenantId)
+      .single();
+
+    const providerId = (agent as any)?.settings?.calendar_provider_id as string | undefined;
+    if (providerId) {
+      const { data: provider } = await supabase
+        .from('calendar_providers')
+        .select('user_id')
+        .eq('id', providerId)
+        .eq('tenant_id', params.tenantId)
+        .eq('status', 'active')
+        .single();
+
+      if (provider?.user_id) {
+        targetUserIds = [provider.user_id];
+      } else {
+        return [];
+      }
+    }
+  }
 
   // If agent ID provided, get users from booking settings
   if (params.agentId && !targetUserIds) {

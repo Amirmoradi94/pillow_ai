@@ -186,6 +186,13 @@ pillow_ai/
 3. Add environment variables
 4. Deploy
 
+### Self-Hosted VPS (Hostinger)
+
+Use the production guide and configs in this repo:
+- `docs/HOSTINGER_VPS_DEPLOYMENT.md`
+- `deploy/nginx/pillowai.devnook.xyz.conf`
+- `deploy/pm2/ecosystem.config.js`
+
 ### Environment Variables
 
 Required for production:

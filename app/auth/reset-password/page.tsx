@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { ArrowLeft } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import logoPillow from '@/app/assets/logo_pillow.png';
 
 export default function ResetPasswordPage() {
   const supabase = useMemo(() => createClient(), []);
@@ -123,7 +125,12 @@ export default function ResetPasswordPage() {
             <ArrowLeft className="h-4 w-4" />
             Back to sign in
           </Link>
-          <div className="text-2xl font-bold text-primary">Pillow AI</div>
+          <Image
+            src={logoPillow}
+            alt="Pillow AI"
+            className="h-10 w-auto object-contain"
+            priority
+          />
         </div>
 
         <div className="text-center">

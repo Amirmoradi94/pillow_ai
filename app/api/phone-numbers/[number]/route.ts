@@ -3,6 +3,20 @@ import { getPhoneNumber, updatePhoneNumber, deletePhoneNumber } from '@/lib/rete
 import { requireAuth } from '@/lib/supabase/auth';
 import { createServerClient } from '@/lib/supabase/server';
 
+async function getInternalUserId(supabase: any, authUserId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('users')
+    .select('id')
+    .eq('auth_id', authUserId)
+    .single();
+
+  if (error || !data?.id) {
+    return null;
+  }
+
+  return data.id;
+}
+
 // GET /api/phone-numbers/[number] - Get a specific phone number
 export async function GET(
   request: NextRequest,
@@ -15,6 +29,17 @@ export async function GET(
     }
 
     const phoneNumber = decodeURIComponent(params.number);
+    const supabase = await createServerClient();
+    const { data: ownedNumber } = await supabase
+      .from('phone_numbers')
+      .select('id')
+      .eq('tenant_id', user.tenantId)
+      .eq('number', phoneNumber)
+      .single();
+
+    if (!ownedNumber?.id) {
+      return NextResponse.json({ error: 'Phone number not found' }, { status: 404 });
+    }
 
     const { data, error } = await getPhoneNumber(phoneNumber);
 
@@ -49,6 +74,22 @@ export async function PATCH(
     const phoneNumber = decodeURIComponent(params.number);
     const body = await request.json();
     const { inboundAgentId, outboundAgentId, nickname, inboundWebhookUrl } = body;
+    const supabase = await createServerClient();
+    const internalUserId = await getInternalUserId(supabase, user.id);
+    if (!internalUserId) {
+      return NextResponse.json({ error: 'User profile not found' }, { status: 400 });
+    }
+
+    const { data: existing } = await supabase
+      .from('phone_numbers')
+      .select('id')
+      .eq('tenant_id', user.tenantId)
+      .eq('number', phoneNumber)
+      .single();
+
+    if (!existing?.id) {
+      return NextResponse.json({ error: 'Phone number not found' }, { status: 404 });
+    }
 
     const { data, error } = await updatePhoneNumber(phoneNumber, {
       inboundAgentId,
@@ -60,35 +101,18 @@ export async function PATCH(
     if (error) {
       return NextResponse.json({ error }, { status: 500 });
     }
-
-    const supabase = await createServerClient();
-    const { data: existing } = await supabase
+    const { error: updateError } = await supabase
       .from('phone_numbers')
-      .select('id')
-      .eq('tenant_id', user.tenantId)
-      .eq('number', phoneNumber)
-      .single();
+      .update({
+        inbound_agent_id: inboundAgentId ?? null,
+        outbound_agent_id: outboundAgentId ?? null,
+        nickname: nickname ?? null,
+        created_by: internalUserId,
+      })
+      .eq('id', existing.id);
 
-    if (existing?.id) {
-      await supabase
-        .from('phone_numbers')
-        .update({
-          inbound_agent_id: inboundAgentId ?? null,
-          outbound_agent_id: outboundAgentId ?? null,
-          nickname: nickname ?? null,
-        })
-        .eq('id', existing.id);
-    } else {
-      await supabase.from('phone_numbers').insert({
-        tenant_id: user.tenantId,
-        number: phoneNumber,
-        status: 'active',
-        source: 'purchased',
-        created_by: user.id,
-        inbound_agent_id: inboundAgentId || null,
-        outbound_agent_id: outboundAgentId || null,
-        agent_id: null,
-      });
+    if (updateError) {
+      return NextResponse.json({ error: 'Failed to update phone number ownership' }, { status: 500 });
     }
 
     return NextResponse.json({ phoneNumber: data });
@@ -116,6 +140,17 @@ export async function DELETE(
     }
 
     const phoneNumber = decodeURIComponent(params.number);
+    const supabase = await createServerClient();
+    const { data: existing } = await supabase
+      .from('phone_numbers')
+      .select('id')
+      .eq('tenant_id', user.tenantId)
+      .eq('number', phoneNumber)
+      .single();
+
+    if (!existing?.id) {
+      return NextResponse.json({ error: 'Phone number not found' }, { status: 404 });
+    }
 
     const { error } = await deletePhoneNumber(phoneNumber);
 
@@ -123,7 +158,6 @@ export async function DELETE(
       return NextResponse.json({ error }, { status: 500 });
     }
 
-    const supabase = await createServerClient();
     await supabase
       .from('phone_numbers')
       .delete()

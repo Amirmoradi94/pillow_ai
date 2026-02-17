@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
-import { Mic, ArrowRight, Sparkles, Zap, Check } from "lucide-react";
+import { ArrowRight, Sparkles, Zap, Check } from "lucide-react";
+import logoPillow from "@/app/assets/logo_pillow.png";
 
 export function Hero() {
   return (
@@ -25,11 +27,12 @@ export function Hero() {
         <div className="glass-strong rounded-2xl px-6 py-4 md:px-8 shadow-elevated">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="relative flex h-10 w-10 items-center justify-center rounded-xl gradient-primary shadow-glow">
-                <Mic className="h-5 w-5 text-primary-foreground" />
-                <div className="absolute inset-0 rounded-xl bg-white/20 blur-sm" />
-              </div>
-              <span className="text-xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Pillow AI</span>
+              <Image
+                src={logoPillow}
+                alt="Pillow AI"
+                className="h-10 w-auto object-contain"
+                priority
+              />
             </div>
 
             <div className="hidden items-center gap-8 md:flex">

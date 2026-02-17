@@ -19,6 +19,8 @@ export default function AgentsPage() {
   const router = useRouter();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [agentToDelete, setAgentToDelete] = useState<Agent | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     fetchAgents();
@@ -37,18 +39,20 @@ export default function AgentsPage() {
   };
 
   const handleDeleteAgent = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this agent?')) return;
-
     try {
+      setDeleting(true);
       const response = await fetch(`/api/agents/${id}`, {
         method: 'DELETE',
       });
 
       if (response.ok) {
+        setAgentToDelete(null);
         fetchAgents();
       }
     } catch (error) {
       console.error('Error deleting agent:', error);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -91,11 +95,11 @@ export default function AgentsPage() {
           </p>
         </div>
       ) : (
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {agents.map((agent) => (
             <div
               key={agent.id}
-              className="rounded-lg border bg-card p-6 shadow-sm transition-all hover:shadow-md"
+              className="rounded-lg border bg-card p-5 shadow-sm transition-all hover:shadow-md"
             >
               <div className="mb-4 flex items-start justify-between">
                 <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -132,7 +136,7 @@ export default function AgentsPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => handleDeleteAgent(agent.id)}
+                  onClick={() => setAgentToDelete(agent)}
                   className="text-destructive hover:bg-destructive/10"
                 >
                   <Trash2 className="h-4 w-4" />
@@ -140,6 +144,33 @@ export default function AgentsPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {agentToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-xl border bg-card p-6 shadow-xl">
+            <h3 className="text-lg font-semibold">Delete Agent?</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Are you sure you want to delete <span className="font-medium text-foreground">{agentToDelete.name}</span>? This action cannot be undone.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setAgentToDelete(null)}
+                disabled={deleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => handleDeleteAgent(agentToDelete.id)}
+                disabled={deleting}
+              >
+                {deleting ? 'Deleting...' : 'Delete'}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

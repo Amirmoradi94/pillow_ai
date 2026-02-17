@@ -11,7 +11,7 @@ export async function GET(
 ) {
   try {
     const user = await requireAuth();
-    const supabase = await createServerClient();
+    const supabase: any = await createServerClient();
 
     // Apply RLS - users can only see their tenant's agents
     const { data, error } = await supabase
@@ -39,7 +39,7 @@ export async function PUT(
 ) {
   try {
     const user = await requireAuth();
-    const supabase = await createServerClient();
+    const supabase: any = await createServerClient();
 
     if (user.role === 'client') {
       return NextResponse.json({ error: 'Clients cannot update agents' }, { status: 403 });
@@ -61,6 +61,23 @@ export async function PUT(
 
     // Type assertion after null check
     const agent = existingAgent as any;
+    const calendarProviderId = settings?.calendar_provider_id as string | undefined;
+
+    if (calendarProviderId) {
+      const { data: provider } = await supabase
+        .from('calendar_providers')
+        .select('id')
+        .eq('id', calendarProviderId)
+        .eq('tenant_id', agent.tenant_id)
+        .single();
+
+      if (!provider) {
+        return NextResponse.json(
+          { error: 'Selected calendar provider is invalid for this agent tenant' },
+          { status: 400 }
+        );
+      }
+    }
 
     // Regenerate tools if tools_config is provided, otherwise use provided tools
     let tools = settings?.tools || [];
@@ -100,6 +117,12 @@ export async function PUT(
         voice_model: settings?.voice_model,
         language: settings?.language,
         response_speed: settings?.response_speed,
+        voice_emotion: settings?.voice_emotion,
+        interruption_sensitivity: settings?.interruption_sensitivity,
+        enable_backchannel: settings?.enable_backchannel,
+        backchannel_frequency: settings?.backchannel_frequency,
+        backchannel_words: settings?.backchannel_words,
+        end_call_after_silence_ms: settings?.end_call_after_silence_ms,
         ambient_sound: settings?.ambient_sound,
         ambient_sound_volume: settings?.ambient_sound_volume,
       },
@@ -148,7 +171,7 @@ export async function DELETE(
 ) {
   try {
     const user = await requireAuth();
-    const supabase = await createServerClient();
+    const supabase: any = await createServerClient();
 
     if (user.role === 'client') {
       return NextResponse.json({ error: 'Clients cannot delete agents' }, { status: 403 });

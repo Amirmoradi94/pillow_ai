@@ -13,6 +13,12 @@ export async function createRetellAgent(config: {
   voice_model?: string;
   language?: string;
   response_speed?: 'fast' | 'medium' | 'slow';
+  voice_emotion?: 'calm' | 'sympathetic' | 'happy' | 'sad' | 'angry' | 'fearful' | 'surprised' | '';
+  interruption_sensitivity?: number;
+  enable_backchannel?: boolean;
+  backchannel_frequency?: number;
+  backchannel_words?: string[];
+  end_call_after_silence_ms?: number;
   knowledge_base_ids?: string[];
   tools?: any[];
   ambient_sound?: string;
@@ -63,9 +69,53 @@ export async function createRetellAgent(config: {
     if (config.ambient_sound_volume !== undefined) {
       agentConfig.ambient_sound_volume = config.ambient_sound_volume;
     }
+    if (config.voice_emotion !== undefined) {
+      agentConfig.voice_emotion = config.voice_emotion || null;
+    }
+    if (config.interruption_sensitivity !== undefined) {
+      agentConfig.interruption_sensitivity = config.interruption_sensitivity;
+    }
+    if (config.enable_backchannel !== undefined) {
+      agentConfig.enable_backchannel = config.enable_backchannel;
+    }
+    if (config.backchannel_frequency !== undefined) {
+      agentConfig.backchannel_frequency = config.backchannel_frequency;
+    }
+    if (config.backchannel_words !== undefined) {
+      agentConfig.backchannel_words = config.backchannel_words;
+    }
+    if (config.end_call_after_silence_ms !== undefined) {
+      agentConfig.end_call_after_silence_ms = config.end_call_after_silence_ms;
+    }
 
-    // @ts-ignore
-    const agent = await client.agent.create(agentConfig);
+    const defaultVoiceId = '11labs-Adrian';
+    let agent: any;
+    try {
+      // @ts-ignore
+      agent = await client.agent.create(agentConfig);
+    } catch (createError: any) {
+      const createErrorMessage =
+        createError?.error?.error_message ||
+        createError?.message ||
+        '';
+      const isVoiceNotFound =
+        createErrorMessage.includes('Item') &&
+        createErrorMessage.includes('not found') &&
+        createErrorMessage.includes('voice');
+
+      if (!isVoiceNotFound || agentConfig.voice_id === defaultVoiceId) {
+        throw createError;
+      }
+
+      // Retry once with a known-safe default voice when selected voice is missing.
+      // This prevents agent creation failures from stale template voice ids.
+      console.warn(
+        `Voice ${agentConfig.voice_id} not found. Retrying with fallback ${defaultVoiceId}.`
+      );
+      agentConfig.voice_id = defaultVoiceId;
+      // @ts-ignore
+      agent = await client.agent.create(agentConfig);
+    }
 
     // Return agent with llm_id
     return {
@@ -91,6 +141,12 @@ export async function updateRetellAgent(
     voice_model?: string;
     language?: string;
     response_speed?: 'fast' | 'medium' | 'slow';
+    voice_emotion?: 'calm' | 'sympathetic' | 'happy' | 'sad' | 'angry' | 'fearful' | 'surprised' | '';
+    interruption_sensitivity?: number;
+    enable_backchannel?: boolean;
+    backchannel_frequency?: number;
+    backchannel_words?: string[];
+    end_call_after_silence_ms?: number;
     ambient_sound?: string;
     ambient_sound_volume?: number;
   },
@@ -120,6 +176,24 @@ export async function updateRetellAgent(
     if (config.language) updateData.language = config.language;
     if (config.response_speed) {
       updateData.responsiveness = config.response_speed === 'fast' ? 0.8 : config.response_speed === 'slow' ? 0.3 : 0.5;
+    }
+    if (config.voice_emotion !== undefined) {
+      updateData.voice_emotion = config.voice_emotion || null;
+    }
+    if (config.interruption_sensitivity !== undefined) {
+      updateData.interruption_sensitivity = config.interruption_sensitivity;
+    }
+    if (config.enable_backchannel !== undefined) {
+      updateData.enable_backchannel = config.enable_backchannel;
+    }
+    if (config.backchannel_frequency !== undefined) {
+      updateData.backchannel_frequency = config.backchannel_frequency;
+    }
+    if (config.backchannel_words !== undefined) {
+      updateData.backchannel_words = config.backchannel_words;
+    }
+    if (config.end_call_after_silence_ms !== undefined) {
+      updateData.end_call_after_silence_ms = config.end_call_after_silence_ms;
     }
     if (config.ambient_sound !== undefined) {
       updateData.ambient_sound = config.ambient_sound || null;
@@ -168,6 +242,51 @@ export async function listRetellAgents() {
   } catch (error) {
     console.error('Error listing Retell agents:', error);
     return { data: null, error: 'Failed to list agents' };
+  }
+}
+
+export async function createRetellPhoneCall(config: {
+  fromNumber: string;
+  toNumber: string;
+  overrideAgentId: string;
+  retellLlmDynamicVariables?: Record<string, string>;
+  metadata?: Record<string, any>;
+}) {
+  try {
+    const apiKey = process.env.RETELL_API_KEY;
+    if (!apiKey) {
+      return { data: null, error: 'Missing RETELL_API_KEY' };
+    }
+
+    const response = await fetch('https://api.retellai.com/v2/create-phone-call', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from_number: config.fromNumber,
+        to_number: config.toNumber,
+        override_agent_id: config.overrideAgentId,
+        retell_llm_dynamic_variables: config.retellLlmDynamicVariables || {},
+        metadata: config.metadata || {},
+      }),
+    });
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const errorMessage =
+        payload?.error?.error_message ||
+        payload?.error ||
+        payload?.message ||
+        `Retell create-phone-call failed (${response.status})`;
+      return { data: null, error: errorMessage };
+    }
+
+    return { data: payload, error: null };
+  } catch (error: any) {
+    console.error('Error creating Retell phone call:', error);
+    return { data: null, error: error?.message || 'Failed to create phone call' };
   }
 }
 

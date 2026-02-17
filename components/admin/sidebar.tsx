@@ -1,8 +1,10 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { LayoutDashboard, Users, Building2, Phone, Settings, LogOut } from 'lucide-react';
+import logoPillow from '@/app/assets/logo_pillow.png';
 
 const navItems = [
   { name: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
@@ -27,7 +29,12 @@ export function AdminSidebar() {
   return (
     <aside className="flex h-screen w-64 flex-col border-r bg-card">
       <div className="border-b p-6">
-        <h1 className="text-2xl font-bold text-primary">Pillow AI</h1>
+        <Image
+          src={logoPillow}
+          alt="Pillow AI"
+          className="h-20 w-full object-contain object-left"
+          priority
+        />
         <p className="text-sm text-muted-foreground">Admin Portal</p>
       </div>
       <nav className="flex-1 space-y-1 p-4">

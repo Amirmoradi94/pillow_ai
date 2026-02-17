@@ -96,7 +96,8 @@ export function validateBusinessRows(rows: string[][], headers: string[]) {
   const indexes = mapRequiredHeaderIndexes(headers);
   const requiredKeys = REQUIRED_BUSINESS_HEADERS;
   const phoneIndex = indexes.business_phone;
-  const phonePattern = /^\+1-\d{3}-\d{4}$/;
+  // Accept +1-555-1234 and +1-555-555-1234 formats.
+  const phonePattern = /^\+1-(?:\d{3}-\d{4}|\d{3}-\d{3}-\d{4})$/;
 
   const missingRows: number[] = [];
   const invalidPhoneRows: number[] = [];

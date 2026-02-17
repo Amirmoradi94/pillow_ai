@@ -19,6 +19,23 @@ interface Voice {
   preview_audio_url?: string;
 }
 
+interface CalendarProvider {
+  id: string;
+  provider: string;
+  provider_email?: string | null;
+  status: string;
+}
+
+const CANADA_TIMEZONES = [
+  { value: 'America/St_Johns', label: 'Newfoundland (America/St_Johns)' },
+  { value: 'America/Halifax', label: 'Atlantic (America/Halifax)' },
+  { value: 'America/Toronto', label: 'Eastern (America/Toronto)' },
+  { value: 'America/Winnipeg', label: 'Central (America/Winnipeg)' },
+  { value: 'America/Edmonton', label: 'Mountain (America/Edmonton)' },
+  { value: 'America/Vancouver', label: 'Pacific (America/Vancouver)' },
+  { value: 'America/Whitehorse', label: 'Yukon (America/Whitehorse)' },
+];
+
 export default function NewAgentPage() {
   const router = useRouter();
   const [step, setStep] = useState<'template' | 'sales-config' | 'configure'>('template');
@@ -31,6 +48,13 @@ export default function NewAgentPage() {
   const [voices, setVoices] = useState<Voice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<string>('');
   const [selectedVoiceName, setSelectedVoiceName] = useState<string>('');
+  const [language, setLanguage] = useState<string>('en-US');
+  const [voiceEmotion, setVoiceEmotion] = useState<string>('');
+  const [interruptionSensitivity, setInterruptionSensitivity] = useState<number>(0.5);
+  const [enableBackchannel, setEnableBackchannel] = useState<boolean>(true);
+  const [backchannelFrequency, setBackchannelFrequency] = useState<number>(0.8);
+  const [backchannelWordsInput, setBackchannelWordsInput] = useState<string>('yeah, uh-huh, okay');
+  const [endCallAfterSilenceSeconds, setEndCallAfterSilenceSeconds] = useState<string>('600');
   const [loadingVoices, setLoadingVoices] = useState(false);
   const [showVoiceModal, setShowVoiceModal] = useState(false);
   const [voiceProvider, setVoiceProvider] = useState<string>('elevenlabs');
@@ -53,11 +77,20 @@ export default function NewAgentPage() {
   const [purchasingPhone, setPurchasingPhone] = useState(false);
   const [newPhoneAreaCode, setNewPhoneAreaCode] = useState<string>('');
   const [newPhoneNickname, setNewPhoneNickname] = useState<string>('');
+  const [calendarProviders, setCalendarProviders] = useState<CalendarProvider[]>([]);
+  const [selectedCalendarProviderId, setSelectedCalendarProviderId] = useState<string>('');
+  const [agentCalendarName, setAgentCalendarName] = useState<string>('Branch Calendar');
+  const [agentCalendarTimezone, setAgentCalendarTimezone] = useState<string>('America/Toronto');
+  const [agentCalendarStartTime, setAgentCalendarStartTime] = useState<string>('09:00');
+  const [agentCalendarEndTime, setAgentCalendarEndTime] = useState<string>('17:00');
+  const [agentCalendarSlotDuration, setAgentCalendarSlotDuration] = useState<number>(30);
 
   const handleTemplateSelect = (template: AgentTemplate) => {
     setSelectedTemplate(template);
+    setAgentCalendarName(`${template.name} Calendar`);
     setSelectedVoice(template.suggestedVoice);
     setSelectedVoiceName(template.suggestedVoice.split('-')[1] || template.suggestedVoice);
+    setLanguage(template.language || 'en-US');
 
     // Sales Agent needs special configuration
     if (template.id === 'sales-agent-outbound') {
@@ -73,6 +106,21 @@ export default function NewAgentPage() {
   };
 
   // Fetch voices when modal opens
+  useEffect(() => {
+    fetchCalendarProviders();
+  }, []);
+
+  const fetchCalendarProviders = async () => {
+    try {
+      const response = await fetch('/api/calendar/providers');
+      if (!response.ok) return;
+      const data = await response.json();
+      setCalendarProviders(data.providers || []);
+    } catch (error) {
+      console.error('Error fetching calendar providers:', error);
+    }
+  };
+
   useEffect(() => {
     if (showVoiceModal && voices.length === 0) {
       fetchVoices();
@@ -156,6 +204,16 @@ export default function NewAgentPage() {
   const handleVoiceSelect = (voice: Voice) => {
     setSelectedVoice(voice.voice_id);
     setSelectedVoiceName(voice.voice_name);
+    closeVoiceModal();
+  };
+
+  const closeVoiceModal = () => {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+    }
+    setPlayingVoiceId(null);
+    setCurrentAudio(null);
     setShowVoiceModal(false);
   };
 
@@ -263,8 +321,18 @@ export default function NewAgentPage() {
 
       const agentSettings: Record<string, any> = {
         voice_model: selectedVoice || selectedTemplate.suggestedVoice,
-        language: selectedTemplate.language,
+        language,
         response_speed: 'medium',
+        voice_emotion: voiceEmotion || undefined,
+        interruption_sensitivity: interruptionSensitivity,
+        enable_backchannel: enableBackchannel,
+        backchannel_frequency: backchannelFrequency,
+        backchannel_words: enableBackchannel
+          ? backchannelWordsInput.split(',').map((word) => word.trim()).filter(Boolean)
+          : undefined,
+        end_call_after_silence_ms:
+          Math.max(10, parseInt(endCallAfterSilenceSeconds || '600', 10) || 600) * 1000,
+        calendar_provider_id: selectedCalendarProviderId || undefined,
         ambient_sound: backgroundSound !== 'none' ? backgroundSound : undefined,
         ambient_sound_volume: backgroundSound !== 'none' ? backgroundSoundVolume : undefined,
       };
@@ -295,7 +363,35 @@ export default function NewAgentPage() {
 
       const agentData = await response.json();
 
-      // Step 3: If phone number selected, bind it to the agent
+      // Step 3: Create dedicated calendar settings + availability for this agent.
+      // Do not block agent creation if calendar setup fails; user can fix in Calendar page.
+      let calendarSetupFailed = false;
+      try {
+        const calendarSetupResponse = await fetch('/api/calendar/agent-calendars', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agent_id: agentData.agent.id,
+            calendar_provider_id: selectedCalendarProviderId,
+            calendar_name: agentCalendarName,
+            timezone: agentCalendarTimezone,
+            day_start: agentCalendarStartTime,
+            day_end: agentCalendarEndTime,
+            slot_duration: agentCalendarSlotDuration,
+          }),
+        });
+
+        if (!calendarSetupResponse.ok) {
+          calendarSetupFailed = true;
+          const data = await calendarSetupResponse.json().catch(() => ({}));
+          console.error('Calendar setup failed after agent creation:', data);
+        }
+      } catch (calendarError) {
+        calendarSetupFailed = true;
+        console.error('Calendar setup failed after agent creation:', calendarError);
+      }
+
+      // Step 4: If phone number selected, bind it to the agent
       if (selectedPhoneNumber && agentData.agent?.retell_agent_id) {
         try {
           await fetch(`/api/phone-numbers/${encodeURIComponent(selectedPhoneNumber)}`, {
@@ -314,6 +410,12 @@ export default function NewAgentPage() {
       }
 
       // Success! Redirect to agents list
+      if (calendarSetupFailed) {
+        sessionStorage.setItem(
+          'agent_create_warning',
+          'Agent was created, but calendar setup failed. Please open Calendar page to complete setup.'
+        );
+      }
       router.push('/dashboard/agents');
     } catch (err: any) {
       setError(err.message || 'Failed to create agent');
@@ -327,13 +429,24 @@ export default function NewAgentPage() {
         {/* Header */}
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <Link
-              href="/dashboard/agents"
-              className="mb-4 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Back to Agents
-            </Link>
+            {step === 'template' ? (
+              <Link
+                href="/dashboard/agents"
+                className="mb-4 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                Back to Agents
+              </Link>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setStep('template')}
+                className="mb-4 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                Back to Agents
+              </button>
+            )}
             <h1 className="text-3xl font-bold">Create New Agent</h1>
             <p className="text-muted-foreground">
               {step === 'template'
@@ -452,19 +565,16 @@ export default function NewAgentPage() {
         {/* Sales Agent Configuration Step */}
         {step === 'sales-config' && selectedTemplate && (
           <div className="space-y-6">
-            <Link
-              href="/dashboard/agents"
-              className="mb-4 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Back to Agents
-            </Link>
-
             <div>
               <h1 className="text-3xl font-bold">Configure Sales Agent</h1>
               <p className="text-muted-foreground">
                 Set up your outbound calling agent with schedule and call settings
               </p>
+            </div>
+
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+              Next step includes full voice agent settings: voice selection, language, voice emotion,
+              interruption sensitivity, active listening responses, end-call silence timeout, and ambient sound.
             </div>
 
             <SalesAgentConfig
@@ -611,6 +721,116 @@ export default function NewAgentPage() {
                   </p>
                 </div>
 
+                {/* Language */}
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Language
+                  </label>
+                  <select
+                    value={language}
+                    onChange={(e) => setLanguage(e.target.value)}
+                    className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="en-US">English (US)</option>
+                    <option value="en-GB">English (UK)</option>
+                    <option value="en-IN">English (India)</option>
+                    <option value="es-ES">Spanish (Spain)</option>
+                    <option value="es-419">Spanish (LatAm)</option>
+                    <option value="fr-FR">French</option>
+                    <option value="de-DE">German</option>
+                    <option value="pt-BR">Portuguese (Brazil)</option>
+                    <option value="pt-PT">Portuguese (Portugal)</option>
+                    <option value="hi-IN">Hindi</option>
+                    <option value="ja-JP">Japanese</option>
+                  </select>
+                </div>
+
+                {/* Interaction Settings */}
+                <div className="rounded-lg border bg-muted/30 p-4">
+                  <label className="mb-3 block text-sm font-medium">
+                    Interaction Settings
+                  </label>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Voice Emotion</label>
+                      <select
+                        value={voiceEmotion}
+                        onChange={(e) => setVoiceEmotion(e.target.value)}
+                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      >
+                        <option value="">Default</option>
+                        <option value="calm">Calm</option>
+                        <option value="sympathetic">Sympathetic</option>
+                        <option value="happy">Happy</option>
+                        <option value="sad">Sad</option>
+                        <option value="angry">Angry</option>
+                        <option value="fearful">Fearful</option>
+                        <option value="surprised">Surprised</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Interruption Sensitivity ({interruptionSensitivity.toFixed(2)})</label>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={interruptionSensitivity}
+                        onChange={(e) => setInterruptionSensitivity(parseFloat(e.target.value))}
+                        className="w-full"
+                      />
+                    </div>
+                    <div className="md:col-span-2 flex items-center justify-between rounded-lg border bg-background px-3 py-2">
+                      <label className="text-sm font-medium">Enable Active Listening Responses</label>
+                      <input
+                        type="checkbox"
+                        checked={enableBackchannel}
+                        onChange={(e) => setEnableBackchannel(e.target.checked)}
+                        className="h-4 w-4"
+                      />
+                    </div>
+                    {enableBackchannel && (
+                      <>
+                        <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">Backchannel Frequency ({backchannelFrequency.toFixed(2)})</label>
+                        <p className="mb-1 text-xs text-muted-foreground">How often the agent says brief acknowledgements while the caller is speaking.</p>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                            step="0.05"
+                            value={backchannelFrequency}
+                            onChange={(e) => setBackchannelFrequency(parseFloat(e.target.value))}
+                            className="w-full"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-muted-foreground">Acknowledgement Phrases (comma separated)</label>
+                          <input
+                            type="text"
+                            value={backchannelWordsInput}
+                            onChange={(e) => setBackchannelWordsInput(e.target.value)}
+                            className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                            placeholder="yeah, uh-huh, okay"
+                          />
+                        </div>
+                      </>
+                    )}
+                    <div className="md:col-span-2">
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">End Call After Silence (seconds, min 10)</label>
+                      <input
+                        type="number"
+                        min={10}
+                        step={1}
+                        value={endCallAfterSilenceSeconds}
+                        onChange={(e) => setEndCallAfterSilenceSeconds(e.target.value)}
+                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 {/* Background Sound */}
                 <div>
                   <label className="mb-2 block text-sm font-medium">
@@ -714,6 +934,93 @@ export default function NewAgentPage() {
                   </div>
                 )}
 
+                <div className="rounded-lg border bg-muted/30 p-4">
+                  <label className="mb-2 block text-sm font-medium">
+                    Dedicated Agent Calendar
+                  </label>
+                  <select
+                    value={selectedCalendarProviderId}
+                    onChange={(e) => setSelectedCalendarProviderId(e.target.value)}
+                    className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="">Pillow Internal Calendar (built-in)</option>
+                    {calendarProviders.map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.provider.toUpperCase()} {provider.provider_email ? `- ${provider.provider_email}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {calendarProviders.length === 0 ? (
+                    <p className="mt-1 text-xs text-amber-600">
+                      No connected calendars found. Connect one in{' '}
+                      <Link href="/dashboard/calendar" className="underline">
+                        Calendar Settings
+                      </Link>{' '}
+                      first.
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Uses Pillow Internal Calendar by default. Optional: choose Google/Outlook now or later.
+                    </p>
+                  )}
+
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Calendar Name</label>
+                      <input
+                        type="text"
+                        value={agentCalendarName}
+                        onChange={(e) => setAgentCalendarName(e.target.value)}
+                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                        placeholder="Downtown Branch Calendar"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Timezone</label>
+                      <select
+                        value={agentCalendarTimezone}
+                        onChange={(e) => setAgentCalendarTimezone(e.target.value)}
+                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      >
+                        {CANADA_TIMEZONES.map((timezone) => (
+                          <option key={timezone.value} value={timezone.value}>
+                            {timezone.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Open Time</label>
+                      <input
+                        type="time"
+                        value={agentCalendarStartTime}
+                        onChange={(e) => setAgentCalendarStartTime(e.target.value)}
+                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Close Time</label>
+                      <input
+                        type="time"
+                        value={agentCalendarEndTime}
+                        onChange={(e) => setAgentCalendarEndTime(e.target.value)}
+                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Slot Duration (minutes)</label>
+                      <input
+                        type="number"
+                        min={5}
+                        step={5}
+                        value={agentCalendarSlotDuration}
+                        onChange={(e) => setAgentCalendarSlotDuration(parseInt(e.target.value || '30', 10))}
+                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 {/* Action Buttons */}
                 <div className="flex gap-3 pt-4">
                   <Button
@@ -733,14 +1040,19 @@ export default function NewAgentPage() {
 
       {/* Voice Selection Modal */}
       {showVoiceModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="mx-4 w-full max-w-4xl rounded-lg bg-card shadow-lg">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-white/10 bg-card shadow-2xl">
             {/* Modal Header */}
-            <div className="flex items-center justify-between border-b p-4">
-              <h2 className="text-xl font-semibold">Select Voice</h2>
+            <div className="flex items-center justify-between border-b border-white/10 bg-gradient-to-r from-primary/10 via-background to-secondary/10 px-5 py-4">
+              <div>
+                <h2 className="text-xl font-semibold">Select Voice</h2>
+                <p className="text-xs text-muted-foreground">
+                  {filteredVoices.length} voices available
+                </p>
+              </div>
               <button
-                onClick={() => setShowVoiceModal(false)}
-                className="rounded-lg p-2 hover:bg-muted"
+                onClick={closeVoiceModal}
+                className="rounded-lg p-2 transition-colors hover:bg-muted/70"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -760,7 +1072,7 @@ export default function NewAgentPage() {
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-4 border-b px-4">
+            <div className="flex flex-wrap gap-2 border-b border-white/10 bg-muted/20 px-4 py-2">
               {['elevenlabs', 'cartesia', 'minimax', 'openai', 'deepgram'].map((provider) => (
                 <button
                   key={provider}
@@ -770,10 +1082,10 @@ export default function NewAgentPage() {
                     setAccentFilter('all');
                     setSearchQuery('');
                   }}
-                  className={`border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
+                  className={`rounded-full px-4 py-2 text-sm font-medium transition-all ${
                     voiceProvider === provider
-                      ? 'border-primary text-primary'
-                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'bg-background text-muted-foreground hover:text-foreground'
                   }`}
                 >
                   {provider === 'elevenlabs' ? 'ElevenLabs' : provider.charAt(0).toUpperCase() + provider.slice(1)}
@@ -782,12 +1094,12 @@ export default function NewAgentPage() {
             </div>
 
             {/* Filters */}
-            <div className="flex flex-wrap gap-3 border-b p-4">
+            <div className="flex flex-wrap gap-3 border-b border-white/10 bg-background px-4 py-4">
               {/* Gender Filter */}
               <select
                 value={genderFilter}
                 onChange={(e) => setGenderFilter(e.target.value)}
-                className="rounded-lg border border-border bg-card px-3 py-2 text-sm"
+                className="rounded-xl border border-border bg-card px-3 py-2 text-sm"
               >
                 <option value="all">Gender</option>
                 <option value="male">Male</option>
@@ -798,7 +1110,7 @@ export default function NewAgentPage() {
               <select
                 value={accentFilter}
                 onChange={(e) => setAccentFilter(e.target.value)}
-                className="rounded-lg border border-border bg-card px-3 py-2 text-sm"
+                className="rounded-xl border border-border bg-card px-3 py-2 text-sm"
               >
                 <option value="all">Accent</option>
                 {availableAccents.map((accent) => (
@@ -814,12 +1126,12 @@ export default function NewAgentPage() {
                 placeholder="Search..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="flex-1 rounded-lg border border-border bg-card px-3 py-2 text-sm"
+                className="flex-1 rounded-xl border border-border bg-card px-3 py-2 text-sm"
               />
             </div>
 
             {/* Content */}
-            <div className="max-h-[500px] overflow-y-auto p-4">
+            <div className="max-h-[65vh] overflow-y-auto p-4">
               {loadingVoices ? (
                 <div className="py-12 text-center text-muted-foreground">Loading voices...</div>
               ) : filteredVoices.length === 0 ? (
@@ -828,15 +1140,15 @@ export default function NewAgentPage() {
                 <div className="space-y-4">
                   {/* Recommended Voices - first 4 */}
                   {filteredVoices.slice(0, 4).length > 0 && (
-                    <div>
+                    <div className="rounded-xl border border-white/10 bg-muted/20 p-3">
                       <h3 className="mb-3 text-sm font-semibold">Recommended Voices</h3>
                       <div className="grid grid-cols-4 gap-3">
                         {filteredVoices.slice(0, 4).map((voice) => (
                           <div
                             key={voice.voice_id}
                             onClick={() => handleVoiceSelect(voice)}
-                            className={`cursor-pointer rounded-lg border p-3 transition-all hover:border-primary ${
-                              selectedVoice === voice.voice_id ? 'border-primary bg-primary/5' : ''
+                            className={`cursor-pointer rounded-xl border p-3 transition-all hover:border-primary ${
+                              selectedVoice === voice.voice_id ? 'border-primary bg-primary/10 shadow-sm' : 'bg-card'
                             }`}
                           >
                             <div className="mb-2 flex items-center justify-between">
@@ -844,7 +1156,7 @@ export default function NewAgentPage() {
                               {voice.preview_audio_url && (
                                 <button
                                   onClick={(e) => handlePlayVoice(voice.voice_id, voice.preview_audio_url, e)}
-                                  className="text-primary hover:text-primary/80"
+                                  className="rounded-md p-1 text-primary transition-colors hover:bg-primary/10 hover:text-primary/80"
                                 >
                                   {playingVoiceId === voice.voice_id ? (
                                     <svg
@@ -886,7 +1198,7 @@ export default function NewAgentPage() {
 
                   {/* All Voices Table */}
                   <div>
-                    <div className="mb-2 grid grid-cols-12 gap-4 border-b pb-2 text-xs font-semibold text-muted-foreground">
+                    <div className="mb-2 grid grid-cols-12 gap-4 border-b border-white/10 pb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       <div className="col-span-4">Voice</div>
                       <div className="col-span-4">Trait</div>
                       <div className="col-span-4">Voice ID</div>
@@ -896,15 +1208,15 @@ export default function NewAgentPage() {
                         <div
                           key={voice.voice_id}
                           onClick={() => handleVoiceSelect(voice)}
-                          className={`grid cursor-pointer grid-cols-12 gap-4 rounded-lg p-3 transition-colors hover:bg-muted ${
-                            selectedVoice === voice.voice_id ? 'bg-primary/5' : ''
+                          className={`grid cursor-pointer grid-cols-12 gap-4 rounded-xl border p-3 transition-colors hover:bg-muted ${
+                            selectedVoice === voice.voice_id ? 'border-primary bg-primary/10' : 'border-transparent'
                           }`}
                         >
                           <div className="col-span-4 flex items-center gap-2">
                             {voice.preview_audio_url && (
                               <button
                                 onClick={(e) => handlePlayVoice(voice.voice_id, voice.preview_audio_url!, e)}
-                                className="text-primary hover:text-primary/80"
+                                className="rounded-md p-1 text-primary transition-colors hover:bg-primary/10 hover:text-primary/80"
                               >
                                 {playingVoiceId === voice.voice_id ? (
                                   <svg

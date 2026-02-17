@@ -12,6 +12,21 @@ interface BrandConfig {
 }
 
 export default function SettingsPage() {
+  const configuredHost = (() => {
+    try {
+      return new URL(process.env.NEXT_PUBLIC_APP_URL || '').hostname.replace(/^www\./, '');
+    } catch {
+      return '';
+    }
+  })();
+
+  const domainSuffix = (() => {
+    if (!configuredHost || configuredHost === 'localhost') return 'pillow.ai';
+    const hostParts = configuredHost.split('.').filter(Boolean);
+    if (hostParts.length < 2) return configuredHost;
+    return hostParts.slice(-2).join('.');
+  })();
+
   const [config, setConfig] = useState<BrandConfig>({
     primary_color: '#2563eb',
     company_name: '',
@@ -216,7 +231,7 @@ export default function SettingsPage() {
                   className="flex-1 rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary"
                   placeholder="your-company"
                 />
-                <span className="text-muted-foreground">.pillow.ai</span>
+                <span className="text-muted-foreground">.{domainSuffix}</span>
               </div>
               <p className="mt-2 text-xs text-muted-foreground">
                 Only lowercase letters, numbers, and hyphens allowed
@@ -226,7 +241,7 @@ export default function SettingsPage() {
               <p className="text-sm">
                 <strong>Preview:</strong>{' '}
                 <span className="text-primary">
-                  {config.subdomain || 'your-company'}.pillow.ai
+                  {config.subdomain || 'your-company'}.{domainSuffix}
                 </span>
               </p>
             </div>
@@ -264,7 +279,7 @@ export default function SettingsPage() {
                     {config.company_name || 'Your Company'}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    {config.subdomain ? `${config.subdomain}.pillow.ai` : 'dashboard.pillow.ai'}
+                    {config.subdomain ? `${config.subdomain}.${domainSuffix}` : `dashboard.${domainSuffix}`}
                   </p>
                 </div>
               </div>

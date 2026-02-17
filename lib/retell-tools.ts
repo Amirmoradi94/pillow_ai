@@ -67,6 +67,36 @@ export const checkCalendarAvailabilityTool = (config: {
   execution_message_description: 'Checking available time slots...',
 });
 
+// 3.5 GET CURRENT DATETIME - Custom Calendar System
+export const getCurrentDateTimeTool = (config: {
+  name: string;
+  description: string;
+  apiUrl: string;
+  agentId: string;
+}): RetellTool => ({
+  type: 'custom',
+  name: config.name || 'get_current_datetime',
+  description: config.description || 'Get exact current date/time for scheduling decisions',
+  url: `${config.apiUrl}/api/calendar/current-datetime/retell`,
+  method: 'POST',
+  parameters: {
+    type: 'object',
+    properties: {
+      timezone: {
+        type: 'string',
+        description: 'Optional override timezone (e.g., America/Toronto)',
+      },
+    },
+    required: [],
+  },
+  headers: {
+    'X-Agent-ID': config.agentId,
+    'Authorization': `Bearer ${process.env.INTERNAL_API_KEY}`,
+  },
+  speak_during_execution: false,
+  execution_message_description: 'Checking the current business date and time...',
+});
+
 // 4. BOOK APPOINTMENT - Custom Calendar System
 export const bookCalendarAppointmentTool = (config: {
   name: string;
@@ -342,6 +372,7 @@ export const RetellTools = {
   endCall: endCallTool,
   transferCall: transferCallTool,
   // New custom calendar tools (preferred)
+  getCurrentDateTime: getCurrentDateTimeTool,
   checkCalendarAvailability: checkCalendarAvailabilityTool,
   bookCalendarAppointment: bookCalendarAppointmentTool,
   // Legacy Cal.com tools (deprecated)

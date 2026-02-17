@@ -22,6 +22,16 @@ const localizer = dateFnsLocalizer({
   locales,
 });
 
+const CANADA_TIMEZONES = [
+  { value: 'America/St_Johns', label: 'Newfoundland (America/St_Johns)' },
+  { value: 'America/Halifax', label: 'Atlantic (America/Halifax)' },
+  { value: 'America/Toronto', label: 'Eastern (America/Toronto)' },
+  { value: 'America/Winnipeg', label: 'Central (America/Winnipeg)' },
+  { value: 'America/Edmonton', label: 'Mountain (America/Edmonton)' },
+  { value: 'America/Vancouver', label: 'Pacific (America/Vancouver)' },
+  { value: 'America/Whitehorse', label: 'Yukon (America/Whitehorse)' },
+];
+
 interface CalendarProvider {
   id: string;
   provider: 'google' | 'outlook' | 'custom';
@@ -57,8 +67,37 @@ interface CalendarEventDisplay {
   resource: CalendarEvent;
 }
 
+interface Agent {
+  id: string;
+  name: string;
+  status: string;
+}
+
+interface AgentCalendar {
+  id: string;
+  agent_id: string | null;
+  agent_name: string;
+  agent_status: string;
+  calendar_name: string;
+  timezone: string;
+  slot_duration: number;
+  day_start: string;
+  day_end: string;
+  calendar_provider_id: string | null;
+  owner_user_id: string | null;
+  distribution_strategy: string;
+  provider: {
+    id: string;
+    type: string;
+    email?: string | null;
+    status: string;
+  } | null;
+}
+
 export default function CalendarPage() {
   const [providers, setProviders] = useState<CalendarProvider[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentCalendars, setAgentCalendars] = useState<AgentCalendar[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingEvents, setLoadingEvents] = useState(true);
@@ -67,12 +106,24 @@ export default function CalendarPage() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
+  const [selectedAgentCalendar, setSelectedAgentCalendar] = useState<AgentCalendar | null>(null);
+  const [activeAgentCalendarId, setActiveAgentCalendarId] = useState<string | null>(null);
   const [view, setView] = useState<View>('month');
   const [date, setDate] = useState(new Date());
+  const [showCreateCalendarModal, setShowCreateCalendarModal] = useState(false);
+  const [savingAgentCalendar, setSavingAgentCalendar] = useState(false);
+  const [newCalendarAgentId, setNewCalendarAgentId] = useState('');
+  const [newCalendarProviderId, setNewCalendarProviderId] = useState('');
+  const [newCalendarName, setNewCalendarName] = useState('Agent Calendar');
+  const [newCalendarTimezone, setNewCalendarTimezone] = useState('America/Toronto');
+  const [newCalendarStartTime, setNewCalendarStartTime] = useState('09:00');
+  const [newCalendarEndTime, setNewCalendarEndTime] = useState('17:00');
+  const [newCalendarSlotDuration, setNewCalendarSlotDuration] = useState(30);
 
   useEffect(() => {
     fetchProviders();
-    fetchEvents();
+    fetchAgents();
+    fetchAgentCalendars();
 
     // Check for OAuth callback messages
     const params = new URLSearchParams(window.location.search);
@@ -84,6 +135,16 @@ export default function CalendarPage() {
       window.history.replaceState({}, '', '/dashboard/calendar');
     }
   }, []);
+
+  useEffect(() => {
+    if (agentCalendars.length === 0) {
+      setEvents([]);
+      setLoadingEvents(false);
+      return;
+    }
+    const activeCalendar = agentCalendars.find((calendar) => calendar.id === activeAgentCalendarId) || null;
+    fetchEvents(activeCalendar);
+  }, [activeAgentCalendarId, agentCalendars]);
 
   const fetchProviders = async () => {
     try {
@@ -99,10 +160,31 @@ export default function CalendarPage() {
     }
   };
 
-  const fetchEvents = async () => {
+  const fetchAgents = async () => {
+    try {
+      const response = await fetch('/api/agents');
+      if (response.ok) {
+        const data = await response.json();
+        setAgents(data.agents || []);
+      }
+    } catch (error) {
+      console.error('Error fetching agents:', error);
+    }
+  };
+
+  const fetchEvents = async (calendar?: AgentCalendar | null) => {
     setLoadingEvents(true);
     try {
-      const response = await fetch('/api/calendar/events');
+      const params = new URLSearchParams();
+      if (calendar?.calendar_provider_id) {
+        params.set('calendar_provider_id', calendar.calendar_provider_id);
+      } else if (calendar?.agent_id) {
+        params.set('agent_id', calendar.agent_id);
+      } else if (calendar?.owner_user_id) {
+        params.set('user_id', calendar.owner_user_id);
+      }
+      const query = params.toString();
+      const response = await fetch(`/api/calendar/events${query ? `?${query}` : ''}`);
       if (response.ok) {
         const data = await response.json();
         setEvents(data.events || []);
@@ -111,6 +193,125 @@ export default function CalendarPage() {
       console.error('Error fetching events:', error);
     } finally {
       setLoadingEvents(false);
+    }
+  };
+
+  const fetchAgentCalendars = async () => {
+    try {
+      const response = await fetch('/api/calendar/agent-calendars');
+      if (!response.ok) return;
+      const data = await response.json();
+      const calendars: AgentCalendar[] = data.calendars || [];
+      setAgentCalendars(calendars);
+      if (calendars.length === 0) {
+        setActiveAgentCalendarId(null);
+        return;
+      }
+      const hasCurrent = calendars.some((calendar) => calendar.id === activeAgentCalendarId);
+      if (!hasCurrent) {
+        setActiveAgentCalendarId(calendars[0].id);
+      }
+    } catch (error) {
+      console.error('Error fetching agent calendars:', error);
+    }
+  };
+
+  const openCreateAgentCalendarModal = () => {
+    const defaultAgent = agents.find((agent) => agent.status === 'active') || agents[0];
+    const defaultProvider = providers.find((provider) => provider.status === 'active') || providers[0];
+    setNewCalendarAgentId(defaultAgent?.id || '');
+    setNewCalendarProviderId(defaultProvider?.id || '');
+    setNewCalendarName(defaultAgent ? `${defaultAgent.name} Calendar` : 'Agent Calendar');
+    setNewCalendarTimezone('America/Toronto');
+    setNewCalendarStartTime('09:00');
+    setNewCalendarEndTime('17:00');
+    setNewCalendarSlotDuration(30);
+    setShowCreateCalendarModal(true);
+  };
+
+  const openEditAgentCalendarModal = (calendar: AgentCalendar) => {
+    setSelectedAgentCalendar(calendar);
+    setNewCalendarAgentId(calendar.agent_id || '');
+    setNewCalendarProviderId(calendar.calendar_provider_id || calendar.provider?.id || '');
+    setNewCalendarName(calendar.calendar_name || `${calendar.agent_name} Calendar`);
+    setNewCalendarTimezone(calendar.timezone || 'America/Toronto');
+    setNewCalendarStartTime(calendar.day_start || '09:00');
+    setNewCalendarEndTime(calendar.day_end || '17:00');
+    setNewCalendarSlotDuration(Number(calendar.slot_duration || 30));
+  };
+
+  const closeAgentCalendarModal = () => {
+    setShowCreateCalendarModal(false);
+    setSelectedAgentCalendar(null);
+    setSavingAgentCalendar(false);
+  };
+
+  const handleCreateAgentCalendar = async () => {
+    setSavingAgentCalendar(true);
+    try {
+      const response = await fetch('/api/calendar/agent-calendars', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: newCalendarAgentId || undefined,
+          calendar_provider_id: newCalendarProviderId,
+          calendar_name: newCalendarName,
+          timezone: newCalendarTimezone,
+          day_start: newCalendarStartTime,
+          day_end: newCalendarEndTime,
+          slot_duration: newCalendarSlotDuration,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create calendar');
+      }
+
+      setMessage({ type: 'success', text: 'Agent calendar created successfully.' });
+      closeAgentCalendarModal();
+      await fetchAgentCalendars();
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.message || 'Failed to create calendar' });
+    } finally {
+      setSavingAgentCalendar(false);
+    }
+  };
+
+  const handleUpdateAgentCalendar = async () => {
+    if (!selectedAgentCalendar) {
+      setMessage({ type: 'error', text: 'Please select a calendar.' });
+      return;
+    }
+
+    setSavingAgentCalendar(true);
+    try {
+      const response = await fetch(`/api/calendar/agent-calendars/${selectedAgentCalendar.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: newCalendarAgentId || null,
+          calendar_provider_id: newCalendarProviderId,
+          calendar_name: newCalendarName,
+          timezone: newCalendarTimezone,
+          day_start: newCalendarStartTime,
+          day_end: newCalendarEndTime,
+          slot_duration: newCalendarSlotDuration,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to update calendar');
+      }
+
+      setMessage({ type: 'success', text: 'Agent calendar updated successfully.' });
+      closeAgentCalendarModal();
+      await fetchAgentCalendars();
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.message || 'Failed to update calendar' });
+    } finally {
+      setSavingAgentCalendar(false);
     }
   };
 
@@ -147,7 +348,8 @@ export default function CalendarPage() {
           text: `Synced: ${data.eventsCreated} created, ${data.eventsUpdated} updated`,
         });
         fetchProviders();
-        fetchEvents();
+        const activeCalendar = agentCalendars.find((calendar) => calendar.id === activeAgentCalendarId) || null;
+        fetchEvents(activeCalendar);
       } else {
         setMessage({ type: 'error', text: data.error || 'Sync failed' });
       }
@@ -171,7 +373,8 @@ export default function CalendarPage() {
       if (response.ok) {
         setMessage({ type: 'success', text: 'Calendar disconnected successfully' });
         fetchProviders();
-        fetchEvents();
+        const activeCalendar = agentCalendars.find((calendar) => calendar.id === activeAgentCalendarId) || null;
+        fetchEvents(activeCalendar);
       } else {
         setMessage({ type: 'error', text: 'Failed to disconnect calendar' });
       }
@@ -268,7 +471,12 @@ export default function CalendarPage() {
             <Settings className="mr-2 h-4 w-4" />
             Calendar Settings
           </Button>
-          <Button onClick={fetchEvents}>
+          <Button
+            onClick={() => {
+              const activeCalendar = agentCalendars.find((calendar) => calendar.id === activeAgentCalendarId) || null;
+              fetchEvents(activeCalendar);
+            }}
+          >
             <RefreshCw className={`mr-2 h-4 w-4 ${loadingEvents ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
@@ -286,6 +494,90 @@ export default function CalendarPage() {
           {message.text}
         </div>
       )}
+
+      <div className="rounded-lg border bg-card p-6">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-semibold">Agent Calendars</h2>
+            <p className="text-sm text-muted-foreground">
+              Select a calendar card to view that agent&apos;s real calendar.
+            </p>
+          </div>
+          <Button
+            onClick={openCreateAgentCalendarModal}
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            New Calendar
+          </Button>
+        </div>
+
+        {agentCalendars.length === 0 ? (
+          <div className="rounded-lg border border-dashed p-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              No calendars yet. Create one now, or create one while creating a new agent.
+            </p>
+            <div className="mt-3 flex justify-center gap-2">
+              <Button
+                onClick={openCreateAgentCalendarModal}
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                New Calendar
+              </Button>
+              <Link href="/dashboard/agents/new">
+                <Button variant="outline">Create Agent + Calendar</Button>
+              </Link>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {agentCalendars.map((cal) => {
+              const isActive = cal.id === activeAgentCalendarId;
+              return (
+                <div
+                  key={cal.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setActiveAgentCalendarId(cal.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setActiveAgentCalendarId(cal.id);
+                    }
+                  }}
+                  className={`rounded-lg border p-4 text-left transition-colors ${
+                    isActive ? 'border-primary bg-primary/5' : 'hover:border-primary hover:bg-muted/30'
+                  }`}
+                >
+                  <div className="mb-1 font-medium">{cal.calendar_name}</div>
+                  <div className="text-sm text-muted-foreground">
+                    {cal.agent_name} • {cal.timezone}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {cal.day_start}-{cal.day_end} • {cal.slot_duration}m
+                  </div>
+                  <div className="mt-2 flex items-center justify-between">
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium">
+                      {cal.provider
+                        ? `${cal.provider.type.toUpperCase()}${cal.provider.email ? ` · ${cal.provider.email}` : ''}`
+                        : 'Pillow Internal Calendar'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEditAgentCalendarModal(cal);
+                      }}
+                      className="rounded-md border px-2 py-0.5 text-xs hover:bg-muted"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* Calendar Settings Panel */}
       {showSettings && (
@@ -366,13 +658,20 @@ export default function CalendarPage() {
               ))}
             </div>
           )}
+
         </div>
       )}
 
       {/* Main Calendar View */}
       <div className="rounded-lg border bg-card p-6">
         <div className="mb-4 flex items-center justify-between">
-          <div className="flex gap-2">
+          <div>
+            <div className="mb-2 text-sm font-medium">
+              {agentCalendars.length === 0
+                ? 'No agent calendar selected'
+                : `Showing: ${agentCalendars.find((calendar) => calendar.id === activeAgentCalendarId)?.calendar_name || 'Agent Calendar'}`}
+            </div>
+            <div className="flex gap-2">
             <div className="flex items-center gap-2 text-sm">
               <div className="h-3 w-3 rounded" style={{ backgroundColor: '#4285f4' }}></div>
               <span className="text-muted-foreground">Google Calendar</span>
@@ -385,10 +684,22 @@ export default function CalendarPage() {
               <div className="h-3 w-3 rounded" style={{ backgroundColor: '#3174ad' }}></div>
               <span className="text-muted-foreground">Internal</span>
             </div>
+            </div>
           </div>
         </div>
 
-        {loadingEvents ? (
+        {agentCalendars.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-center">
+            <p className="text-muted-foreground">Create your first agent calendar to start viewing schedules.</p>
+            <Button
+              className="mt-4"
+              onClick={openCreateAgentCalendarModal}
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              New Calendar
+            </Button>
+          </div>
+        ) : loadingEvents ? (
           <div className="flex items-center justify-center py-12">
             <div className="text-muted-foreground">Loading events...</div>
           </div>
@@ -410,6 +721,138 @@ export default function CalendarPage() {
           </div>
         )}
       </div>
+
+      {(showCreateCalendarModal || selectedAgentCalendar) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-xl font-semibold">
+                {selectedAgentCalendar ? 'Edit Agent Calendar' : 'Create Agent Calendar'}
+              </h2>
+              <button onClick={closeAgentCalendarModal} className="rounded-lg p-2 hover:bg-muted">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-sm font-medium">Agent (optional)</label>
+                <select
+                  value={newCalendarAgentId}
+                  onChange={(e) => {
+                    setNewCalendarAgentId(e.target.value);
+                    const selected = agents.find((agent) => agent.id === e.target.value);
+                    if (selected && !selectedAgentCalendar) {
+                      setNewCalendarName(`${selected.name} Calendar`);
+                    }
+                  }}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                >
+                  <option value="">Unassigned (assign later)</option>
+                  {agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium">Calendar Name</label>
+                <input
+                  type="text"
+                  value={newCalendarName}
+                  onChange={(e) => setNewCalendarName(e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  placeholder="Downtown Branch Calendar"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium">Calendar Provider</label>
+                <select
+                  value={newCalendarProviderId}
+                  onChange={(e) => setNewCalendarProviderId(e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                >
+                  <option value="">Pillow Internal Calendar (built-in)</option>
+                  {providers
+                    .filter((provider) => provider.status === 'active')
+                    .map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.provider.toUpperCase()} {provider.provider_email ? `- ${provider.provider_email}` : ''}
+                      </option>
+                    ))}
+                </select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Uses Pillow Internal Calendar by default. You can switch to Google/Outlook later.
+                </p>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium">Timezone</label>
+                <select
+                  value={newCalendarTimezone}
+                  onChange={(e) => setNewCalendarTimezone(e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                >
+                  {CANADA_TIMEZONES.map((timezone) => (
+                    <option key={timezone.value} value={timezone.value}>
+                      {timezone.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium">Slot Duration (minutes)</label>
+                <input
+                  type="number"
+                  min={5}
+                  step={5}
+                  value={newCalendarSlotDuration}
+                  onChange={(e) => setNewCalendarSlotDuration(parseInt(e.target.value || '30', 10))}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium">Open Time</label>
+                <input
+                  type="time"
+                  value={newCalendarStartTime}
+                  onChange={(e) => setNewCalendarStartTime(e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium">Close Time</label>
+                <input
+                  type="time"
+                  value={newCalendarEndTime}
+                  onChange={(e) => setNewCalendarEndTime(e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="outline" onClick={closeAgentCalendarModal}>
+                Cancel
+              </Button>
+              <Button
+                onClick={selectedAgentCalendar ? handleUpdateAgentCalendar : handleCreateAgentCalendar}
+                disabled={savingAgentCalendar}
+              >
+                {savingAgentCalendar
+                  ? (selectedAgentCalendar ? 'Saving...' : 'Creating...')
+                  : (selectedAgentCalendar ? 'Save Changes' : 'Create Calendar')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Event Details Modal */}
       {selectedEvent && (

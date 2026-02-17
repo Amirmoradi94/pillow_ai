@@ -1,5 +1,7 @@
 import { Button } from "@/components/ui/button";
-import { Twitter, Linkedin, Youtube, Github, Mic, Heart } from "lucide-react";
+import Image from "next/image";
+import { Twitter, Linkedin, Youtube, Github, Heart } from "lucide-react";
+import logoPillow from "@/app/assets/logo_pillow.png";
 
 const footerLinks = {
   product: [
@@ -50,11 +52,12 @@ export function Footer() {
           {/* Brand column */}
           <div className="col-span-2">
             <a href="#" className="flex items-center gap-3 mb-6 group">
-              <div className="relative w-12 h-12 rounded-xl gradient-primary shadow-glow flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                <Mic className="h-6 w-6 text-primary-foreground" />
-                <div className="absolute inset-0 rounded-xl bg-white/20 blur-sm" />
-              </div>
-              <span className="font-bold text-2xl bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Pillow AI</span>
+              <Image
+                src={logoPillow}
+                alt="Pillow AI"
+                className="h-12 w-auto object-contain group-hover:scale-110 transition-transform duration-300"
+                priority
+              />
             </a>
             <p className="text-muted-foreground mb-8 max-w-xs leading-relaxed text-lg">
               The most realistic AI voice agents for small and local businesses. Transform your customer service today.

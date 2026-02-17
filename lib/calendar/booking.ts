@@ -12,6 +12,7 @@ export interface BookingParams {
   tenantId: string;
   agentId?: string;
   userId?: string; // Specific user to book with (optional)
+  calendarProviderId?: string;
   startTime: Date;
   duration: number; // in minutes
   attendee: {
@@ -152,6 +153,39 @@ export async function createBooking(params: BookingParams): Promise<BookingResul
 
   try {
     const endTime = addMinutes(params.startTime, params.duration);
+    let selectedProviderId = params.calendarProviderId;
+    let forcedUserId = params.userId;
+
+    // Resolve provider from agent settings if not explicitly provided
+    if (!selectedProviderId && params.agentId) {
+      const { data: agent } = await supabase
+        .from('voice_agents')
+        .select('settings')
+        .eq('id', params.agentId)
+        .eq('tenant_id', params.tenantId)
+        .single();
+      selectedProviderId = (agent as any)?.settings?.calendar_provider_id || undefined;
+    }
+
+    // If provider is selected, force booking against that provider's user calendar
+    if (selectedProviderId) {
+      const { data: provider } = await supabase
+        .from('calendar_providers')
+        .select('id, user_id, provider')
+        .eq('id', selectedProviderId)
+        .eq('tenant_id', params.tenantId)
+        .eq('status', 'active')
+        .single();
+
+      if (!provider?.user_id) {
+        return {
+          success: false,
+          error: 'Selected calendar provider is unavailable',
+        };
+      }
+
+      forcedUserId = provider.user_id;
+    }
 
     // Get assigned user
     const userId = await getAssignedUser(
@@ -159,7 +193,7 @@ export async function createBooking(params: BookingParams): Promise<BookingResul
       params.agentId,
       params.startTime,
       endTime,
-      params.userId
+      forcedUserId
     );
 
     if (!userId) {
@@ -222,6 +256,7 @@ export async function createBooking(params: BookingParams): Promise<BookingResul
         start_time: params.startTime.toISOString(),
         end_time: endTime.toISOString(),
         timezone: params.timezone || 'UTC',
+        calendar_provider_id: selectedProviderId || null,
         status: 'confirmed',
         booked_by: 'voice_agent',
         agent_id: params.agentId,
@@ -253,19 +288,19 @@ export async function createBooking(params: BookingParams): Promise<BookingResul
       .eq('id', userId)
       .single();
 
-    // Sync to Google Calendar if provider exists
-    const { data: provider } = await supabase
-      .from('calendar_providers')
-      .select('id')
-      .eq('user_id', userId)
-      .eq('provider', 'google')
-      .eq('status', 'active')
-      .single();
+    // Sync to Google Calendar if this event is linked to an active Google provider
+    if (event.calendar_provider_id) {
+      const { data: linkedProvider } = await supabase
+        .from('calendar_providers')
+        .select('id, provider, status')
+        .eq('id', event.calendar_provider_id)
+        .single();
 
-    if (provider) {
-      syncEventToGoogle(event.id).catch(error => {
-        console.error('Failed to sync event to Google:', error);
-      });
+      if (linkedProvider?.provider === 'google' && linkedProvider?.status === 'active') {
+        syncEventToGoogle(event.id).catch(error => {
+          console.error('Failed to sync event to Google:', error);
+        });
+      }
     }
 
     // TODO: Send confirmation email/SMS

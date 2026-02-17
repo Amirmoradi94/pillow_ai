@@ -33,6 +33,18 @@ export interface SalesAgentConfig {
     startTime: string; // '09:00'
     endTime: string; // '17:00'
     timezone: string;
+    callIntervalMinutes: number;
+    customStartDate?: string; // '2026-02-17'
+    recurrence?: {
+      enabled: boolean;
+      interval: number; // every N units
+      unit: 'day' | 'week' | 'month';
+    };
+    customMode?: 'pattern' | 'specific';
+    specificDateTimes?: Array<{
+      date: string; // '2026-02-17'
+      time: string; // '10:00'
+    }>;
   };
 
   // Call Settings
@@ -88,7 +100,9 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
   const [sheetTabs, setSheetTabs] = useState<Array<{ id: number; title: string }>>([]);
   const [loadingSheetInfo, setLoadingSheetInfo] = useState(false);
   const [loadingSheets, setLoadingSheets] = useState(false);
+  const [loadingLeadCount, setLoadingLeadCount] = useState(false);
   const [checkingConnection, setCheckingConnection] = useState(true);
+  const [googleSheetLeadCount, setGoogleSheetLeadCount] = useState<number | null>(null);
 
   // CSV Upload State
   const [uploadingCsv, setUploadingCsv] = useState(false);
@@ -107,9 +121,17 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
   const [startTime, setStartTime] = useState('09:00');
   const [endTime, setEndTime] = useState('17:00');
   const [timezone, setTimezone] = useState('America/New_York');
+  const [callIntervalMinutes, setCallIntervalMinutes] = useState(15);
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [recurrenceEnabled, setRecurrenceEnabled] = useState(true);
+  const [recurrenceInterval, setRecurrenceInterval] = useState(2);
+  const [recurrenceUnit, setRecurrenceUnit] = useState<'day' | 'week' | 'month'>('week');
+  const [customMode, setCustomMode] = useState<'pattern' | 'specific'>('pattern');
+  const [specificDateTimes, setSpecificDateTimes] = useState<Array<{ date: string; time: string }>>([]);
 
   // Call Settings State
   const [maxCalls, setMaxCalls] = useState(100);
+  const [maxCallsManuallyEdited, setMaxCallsManuallyEdited] = useState(false);
   const [retryNoAnswer, setRetryNoAnswer] = useState({ enabled: true, attempts: 2, hoursApart: 4 });
   const [retryVoicemail, setRetryVoicemail] = useState({ enabled: true, retryAfterDays: 3 });
   const [retryBusy, setRetryBusy] = useState({ enabled: true, retryAfterHours: 1 });
@@ -139,11 +161,41 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
       setSelectedSheet('');
       setSelectedSheetName('');
       setSheetTabs([]);
+      setGoogleSheetLeadCount(null);
     } else {
       setUploadedCsv(null);
       setCsvError('');
     }
   }, [dataSource]);
+
+  const toMinutes = (value: string): number => {
+    const [h, m] = value.split(':').map((v) => parseInt(v, 10));
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
+    return h * 60 + m;
+  };
+
+  const leadCount = dataSource === 'csv_upload'
+    ? (uploadedCsv?.rowCount || 0)
+    : (googleSheetLeadCount || 0);
+
+  const dailyWindowMinutes = Math.max(0, toMinutes(endTime) - toMinutes(startTime));
+  const callsByWindow = callIntervalMinutes > 0
+    ? Math.floor(dailyWindowMinutes / callIntervalMinutes)
+    : 0;
+  const specificSlotsByDate = specificDateTimes.reduce<Record<string, number>>((acc, slot) => {
+    if (!slot.date || !slot.time) return acc;
+    acc[slot.date] = (acc[slot.date] || 0) + 1;
+    return acc;
+  }, {});
+  const callsBySpecific = Object.values(specificSlotsByDate).reduce((max, count) => Math.max(max, count), 0);
+  const callsBySchedule = scheduleType === 'custom' && customMode === 'specific' ? callsBySpecific : callsByWindow;
+  const autoMaxCalls = Math.max(1, Math.min(leadCount || 1, callsBySchedule || 1));
+
+  useEffect(() => {
+    if (!maxCallsManuallyEdited) {
+      setMaxCalls(autoMaxCalls);
+    }
+  }, [autoMaxCalls, maxCallsManuallyEdited]);
 
   const checkGoogleSheetsConnection = async () => {
     setCheckingConnection(true);
@@ -213,7 +265,7 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
             ? `Missing required fields in rows: ${data.missingRows.join(', ')}`
             : '';
           const invalidPhones = data.invalidPhoneRows?.length
-            ? `Invalid phone format in rows: ${data.invalidPhoneRows.join(', ')} (use +1-555-1234)`
+            ? `Invalid phone format in rows: ${data.invalidPhoneRows.join(', ')} (use +1-555-555-1234)`
             : '';
           setCsvError([missingRows, invalidPhones].filter(Boolean).join(' | '));
         } else {
@@ -265,6 +317,41 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
     }
   };
 
+  const loadSheetLeadCount = async (spreadsheetId: string, sheetName: string) => {
+    if (!spreadsheetId || !sheetName) {
+      setGoogleSheetLeadCount(null);
+      return;
+    }
+
+    setLoadingLeadCount(true);
+    try {
+      const escaped = sheetName.replace(/'/g, "''");
+      const range = encodeURIComponent(`'${escaped}'!A:ZZ`);
+      const response = await fetch(`/api/google/sheets/${spreadsheetId}/read?range=${range}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        setGoogleSheetLeadCount(null);
+        return;
+      }
+
+      const values = Array.isArray(data.values) ? data.values : [];
+      const rows = Math.max(0, values.length - 1); // exclude header row
+      setGoogleSheetLeadCount(rows);
+    } catch (error) {
+      console.error('Error loading sheet lead count:', error);
+      setGoogleSheetLeadCount(null);
+    } finally {
+      setLoadingLeadCount(false);
+    }
+  };
+
+  useEffect(() => {
+    if (dataSource === 'google_sheets' && selectedSheet && selectedSheetName) {
+      loadSheetLeadCount(selectedSheet, selectedSheetName);
+    }
+  }, [dataSource, selectedSheet, selectedSheetName]);
+
   const toggleDay = (day: string) => {
     if (selectedDays.includes(day)) {
       setSelectedDays(selectedDays.filter((d) => d !== day));
@@ -288,6 +375,20 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
         startTime,
         endTime,
         timezone,
+        callIntervalMinutes,
+        customStartDate: scheduleType === 'custom' ? customStartDate : undefined,
+        recurrence: scheduleType === 'custom'
+          ? {
+              enabled: recurrenceEnabled,
+              interval: Math.max(1, recurrenceInterval || 1),
+              unit: recurrenceUnit,
+            }
+          : undefined,
+        customMode: scheduleType === 'custom' ? customMode : undefined,
+        specificDateTimes:
+          scheduleType === 'custom' && customMode === 'specific'
+            ? specificDateTimes.filter((slot) => slot.date && slot.time)
+            : undefined,
       },
       maxCallsPerDay: maxCalls,
       retryLogic: {
@@ -304,7 +405,20 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
       if (dataSource === 'google_sheets') return sheetsConnected && selectedSheet && selectedSheetName;
       return !!uploadedCsv;
     }
-    if (currentStep === 2) return selectedDays.length > 0 && startTime && endTime;
+    if (currentStep === 2) {
+      if (scheduleType !== 'custom') {
+        return selectedDays.length > 0 && startTime && endTime && callIntervalMinutes > 0;
+      }
+
+      if (customMode === 'specific') {
+        return specificDateTimes.some((slot) => Boolean(slot.date && slot.time));
+      }
+
+      const hasPatternSchedule = selectedDays.length > 0 && startTime && endTime && callIntervalMinutes > 0;
+      if (!hasPatternSchedule) return false;
+      if (!customStartDate) return false;
+      return !recurrenceEnabled || recurrenceInterval > 0;
+    }
     if (currentStep === 3) return maxCalls > 0;
     return false;
   };
@@ -448,6 +562,7 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                     setSelectedSheet(sheetId);
                     setSelectedSheetName('');
                     setSheetTabs([]);
+                    setGoogleSheetLeadCount(null);
                     if (sheetId) {
                       loadSheetTabs(sheetId);
                     }
@@ -492,6 +607,21 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                       ? 'No tabs found. Ensure your spreadsheet has at least one tab.'
                       : 'Select the tab with your prospect list.'}
                   </p>
+                </div>
+              )}
+
+              {(selectedSheet && selectedSheetName) && (
+                <div className="rounded-lg border bg-muted/40 p-3 text-sm">
+                  {loadingLeadCount ? (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Counting leads from selected sheet...
+                    </div>
+                  ) : (
+                    <div>
+                      Detected leads: <strong>{googleSheetLeadCount ?? 0}</strong>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -630,36 +760,114 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                   }`}
                 >
                   <div className="font-semibold">Custom</div>
-                  <div className="text-xs text-muted-foreground">Pick days</div>
+                  <div className="text-xs text-muted-foreground">Date + repeat rule</div>
                 </button>
               </div>
             </div>
 
             {/* Days Selection (if custom) */}
             {scheduleType === 'custom' && (
-              <div>
-                <label className="mb-3 block text-sm font-medium">
-                  Select Days
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {DAYS_OF_WEEK.map((day) => (
+              <div className="space-y-4 rounded-lg border p-4">
+                <div>
+                  <label className="mb-3 block text-sm font-medium">
+                    Custom Mode
+                  </label>
+                  <div className="grid gap-3 md:grid-cols-2">
                     <button
-                      key={day.value}
-                      onClick={() => toggleDay(day.value)}
-                      className={`rounded-lg border px-4 py-2 font-medium transition-all ${
-                        selectedDays.includes(day.value)
-                          ? 'border-primary bg-primary text-white'
-                          : 'hover:border-primary'
+                      type="button"
+                      onClick={() => setCustomMode('pattern')}
+                      className={`rounded-lg border p-3 text-left transition-all ${
+                        customMode === 'pattern' ? 'border-primary bg-primary/5' : 'hover:border-primary/50'
                       }`}
                     >
-                      {day.label}
+                      <div className="font-medium">Pattern</div>
+                      <div className="text-xs text-muted-foreground">Days + start/end + repeat</div>
                     </button>
-                  ))}
+                    <button
+                      type="button"
+                      onClick={() => setCustomMode('specific')}
+                      className={`rounded-lg border p-3 text-left transition-all ${
+                        customMode === 'specific' ? 'border-primary bg-primary/5' : 'hover:border-primary/50'
+                      }`}
+                    >
+                      <div className="font-medium">Specific Date & Time</div>
+                      <div className="text-xs text-muted-foreground">One-off exact slots</div>
+                    </button>
+                  </div>
                 </div>
+
+                {customMode === 'pattern' ? (
+                  <div>
+                    <label className="mb-3 block text-sm font-medium">
+                      Select Days
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {DAYS_OF_WEEK.map((day) => (
+                        <button
+                          key={day.value}
+                          onClick={() => toggleDay(day.value)}
+                          className={`rounded-lg border px-4 py-2 font-medium transition-all ${
+                            selectedDays.includes(day.value)
+                              ? 'border-primary bg-primary text-white'
+                              : 'hover:border-primary'
+                          }`}
+                        >
+                          {day.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <label className="block text-sm font-medium">Specific Call Slots</label>
+                    {specificDateTimes.length === 0 && (
+                      <p className="text-xs text-muted-foreground">Add one or more exact date/time slots.</p>
+                    )}
+                    {specificDateTimes.map((slot, index) => (
+                      <div key={`${index}-${slot.date}-${slot.time}`} className="grid gap-2 md:grid-cols-3">
+                        <input
+                          type="date"
+                          value={slot.date}
+                          onChange={(e) => {
+                            const next = [...specificDateTimes];
+                            next[index] = { ...next[index], date: e.target.value };
+                            setSpecificDateTimes(next);
+                          }}
+                          className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                        />
+                        <input
+                          type="time"
+                          value={slot.time}
+                          onChange={(e) => {
+                            const next = [...specificDateTimes];
+                            next[index] = { ...next[index], time: e.target.value };
+                            setSpecificDateTimes(next);
+                          }}
+                          className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setSpecificDateTimes(specificDateTimes.filter((_, i) => i !== index))}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setSpecificDateTimes([...specificDateTimes, { date: '', time: '' }])}
+                    >
+                      Add Date & Time
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
 
             {/* Time Range */}
+            {(scheduleType !== 'custom' || customMode === 'pattern') && (
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="mb-2 flex items-center gap-2 text-sm font-medium">
@@ -686,6 +894,88 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                 />
               </div>
             </div>
+            )}
+
+            {(scheduleType !== 'custom' || customMode === 'pattern') && (
+            <div>
+              <label className="mb-2 block text-sm font-medium">
+                Gap Between Calls (Minutes)
+              </label>
+              <input
+                type="number"
+                value={callIntervalMinutes}
+                onChange={(e) => setCallIntervalMinutes(parseInt(e.target.value, 10) || 0)}
+                min="1"
+                max="180"
+                className="w-full rounded-lg border px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Example: 15 means at most one new outbound call every 15 minutes.
+              </p>
+            </div>
+            )}
+
+            {scheduleType === 'custom' && customMode === 'pattern' && (
+              <div className="space-y-4 rounded-lg border p-4">
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    First Call Date
+                  </label>
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    className="w-full rounded-lg border px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="font-medium">Repeat This Schedule</h4>
+                    <p className="text-xs text-muted-foreground">
+                      Turn off for one-time scheduling.
+                    </p>
+                  </div>
+                  <label className="relative inline-flex cursor-pointer items-center">
+                    <input
+                      type="checkbox"
+                      checked={recurrenceEnabled}
+                      onChange={(e) => setRecurrenceEnabled(e.target.checked)}
+                      className="peer sr-only"
+                    />
+                    <div className="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary peer-checked:after:translate-x-full peer-checked:after:border-white"></div>
+                  </label>
+                </div>
+
+                {recurrenceEnabled && (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-2 block text-sm font-medium">Every</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="52"
+                        value={recurrenceInterval}
+                        onChange={(e) => setRecurrenceInterval(parseInt(e.target.value, 10) || 1)}
+                        className="w-full rounded-lg border px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-2 block text-sm font-medium">Unit</label>
+                      <select
+                        value={recurrenceUnit}
+                        onChange={(e) => setRecurrenceUnit(e.target.value as 'day' | 'week' | 'month')}
+                        className="w-full rounded-lg border px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary"
+                      >
+                        <option value="day">Day(s)</option>
+                        <option value="week">Week(s)</option>
+                        <option value="month">Month(s)</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Timezone */}
             <div>
@@ -708,6 +998,16 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
             {/* Preview */}
             <div className="rounded-lg bg-muted/50 p-4">
               <h4 className="mb-2 text-sm font-semibold">Schedule Preview</h4>
+              {scheduleType === 'custom' && customMode === 'specific' ? (
+                <p className="text-sm text-muted-foreground">
+                  Calls will run on exact date/time slots ({timezone.split('/')[1].replace('_', ' ')}):
+                  {' '}
+                  <strong>
+                    {specificDateTimes.filter((slot) => slot.date && slot.time).length}
+                  </strong>
+                  {' '}slot(s) configured.
+                </p>
+              ) : (
               <p className="text-sm text-muted-foreground">
                 Calls will be made on{' '}
                 <strong>
@@ -718,6 +1018,24 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                     : selectedDays.map((d) => d.slice(0, 3)).join(', ')}
                 </strong>{' '}
                 between <strong>{startTime}</strong> and <strong>{endTime}</strong> ({timezone.split('/')[1].replace('_', ' ')})
+                {scheduleType === 'custom' && customStartDate ? (
+                  <>
+                    . First run date: <strong>{customStartDate}</strong>
+                    {recurrenceEnabled
+                      ? <>. Repeats every <strong>{Math.max(1, recurrenceInterval)} {recurrenceUnit}{Math.max(1, recurrenceInterval) > 1 ? 's' : ''}</strong></>
+                      : <>. <strong>One-time custom schedule</strong></>}
+                  </>
+                ) : null}
+                . Up to one new call every <strong>{callIntervalMinutes} minutes</strong>.
+              </p>
+              )}
+              <p className="mt-2 text-sm text-muted-foreground">
+                Auto call capacity per day: <strong>{callsBySchedule}</strong>{' '}
+                {scheduleType === 'custom' && customMode === 'specific'
+                  ? 'based on configured specific slots.'
+                  : 'based on time window and gap.'}
+                Current leads detected: <strong>{leadCount}</strong>.
+                Recommended max calls/day: <strong>{autoMaxCalls}</strong>.
               </p>
             </div>
           </div>
@@ -748,7 +1066,10 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
               <input
                 type="number"
                 value={maxCalls}
-                onChange={(e) => setMaxCalls(parseInt(e.target.value) || 0)}
+                onChange={(e) => {
+                  setMaxCalls(parseInt(e.target.value) || 0);
+                  setMaxCallsManuallyEdited(true);
+                }}
                 min="1"
                 max="1000"
                 className="w-full rounded-lg border px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary"
@@ -756,6 +1077,16 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
               <p className="mt-1 text-xs text-muted-foreground">
                 Agent will make up to {maxCalls} calls per day
               </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setMaxCalls(autoMaxCalls);
+                  setMaxCallsManuallyEdited(false);
+                }}
+                className="mt-2 text-xs font-medium text-primary underline underline-offset-4"
+              >
+                Use auto-calculated value ({autoMaxCalls})
+              </button>
             </div>
           </div>
 

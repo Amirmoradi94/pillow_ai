@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
     // Get agent's tenant
     const { data: agent } = await supabase
       .from('voice_agents')
-      .select('tenant_id, name')
+      .select('tenant_id, name, settings')
       .eq('id', agentId)
       .single();
 
@@ -74,6 +74,7 @@ export async function POST(request: NextRequest) {
     const result = await createBooking({
       tenantId: agent.tenant_id,
       agentId,
+      calendarProviderId: (agent as any)?.settings?.calendar_provider_id || undefined,
       startTime,
       duration,
       attendee: {

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { ArrowLeft, Save, Trash2, Plus, X, Settings, Phone, Zap, PhoneCall, PhoneOff, Mic, MicOff, Volume2, Play, Pause } from 'lucide-react';
+import { ArrowLeft, Save, Trash2, Plus, X, Settings, Phone, Zap, PhoneCall, PhoneOff, Mic, MicOff, Volume2, Play, Pause, Maximize2 } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { BACKGROUND_SOUNDS, DEFAULT_BACKGROUND_SOUND, DEFAULT_BACKGROUND_SOUND_VOLUME, type BackgroundSound } from '@/lib/background-sounds';
@@ -17,6 +17,13 @@ interface Voice {
   preview_audio_url?: string;
 }
 
+interface CalendarProvider {
+  id: string;
+  provider: string;
+  provider_email?: string | null;
+  status: string;
+}
+
 interface Agent {
   id: string;
   name: string;
@@ -25,9 +32,17 @@ interface Agent {
     voice_model: string;
     language: string;
     response_speed: string;
+    voice_emotion?: string;
+    interruption_sensitivity?: number;
+    enable_backchannel?: boolean;
+    backchannel_frequency?: number;
+    backchannel_words?: string[];
+    end_call_after_silence_ms?: number;
     template_id?: string;
     knowledge_base_ids?: string[];
     tools?: any[];
+    calendar_provider_id?: string;
+    salesAgentConfig?: any;
   };
   retell_agent_id: string;
   retell_llm_id: string;
@@ -91,10 +106,17 @@ export default function AgentEditPage() {
   // Form states
   const [name, setName] = useState('');
   const [script, setScript] = useState('');
+  const [isPromptExpanded, setIsPromptExpanded] = useState(false);
   const [voiceModel, setVoiceModel] = useState('');
   const [voiceName, setVoiceName] = useState('');
   const [language, setLanguage] = useState('en-US');
   const [responseSpeed, setResponseSpeed] = useState('medium');
+  const [voiceEmotion, setVoiceEmotion] = useState('');
+  const [interruptionSensitivity, setInterruptionSensitivity] = useState(0.5);
+  const [enableBackchannel, setEnableBackchannel] = useState(true);
+  const [backchannelFrequency, setBackchannelFrequency] = useState(0.8);
+  const [backchannelWordsInput, setBackchannelWordsInput] = useState('yeah, uh-huh, okay');
+  const [endCallAfterSilenceSeconds, setEndCallAfterSilenceSeconds] = useState('600');
 
   // Voice selection
   const [voices, setVoices] = useState<Voice[]>([]);
@@ -124,6 +146,11 @@ export default function AgentEditPage() {
   const [newPhoneAreaCode, setNewPhoneAreaCode] = useState<string>('');
   const [newPhoneNickname, setNewPhoneNickname] = useState<string>('');
   const [webhookUrls, setWebhookUrls] = useState<Record<string, string>>({});
+  const [calendarProviders, setCalendarProviders] = useState<CalendarProvider[]>([]);
+  const [selectedCalendarProviderId, setSelectedCalendarProviderId] = useState<string>('');
+  const [salesAgentConfig, setSalesAgentConfig] = useState<any | null>(null);
+  const [salesCsvUploading, setSalesCsvUploading] = useState(false);
+  const [salesCsvError, setSalesCsvError] = useState('');
 
   // Web call testing
   const [isCallActive, setIsCallActive] = useState(false);
@@ -169,9 +196,21 @@ export default function AgentEditPage() {
       config: { requiresPhone: true },
     },
   ]);
+  const hasSalesWebhookTools = Array.isArray(agent?.settings?.tools)
+    ? agent!.settings.tools.some((tool: any) =>
+        ['log_call_outcome', 'schedule_callback', 'send_follow_up_email'].includes(tool?.name)
+      )
+    : false;
+  const isOutboundSalesAgent =
+    agent?.settings?.template_id === 'sales-agent-outbound' ||
+    Boolean(agent?.settings?.salesAgentConfig) ||
+    Boolean(salesAgentConfig) ||
+    hasSalesWebhookTools ||
+    (agent?.name || '').toLowerCase().includes('sales agent');
 
   useEffect(() => {
     fetchAgent();
+    fetchCalendarProviders();
   }, [agentId]);
 
   // Fetch voices when modal opens
@@ -271,6 +310,17 @@ export default function AgentEditPage() {
     }
   };
 
+  const fetchCalendarProviders = async () => {
+    try {
+      const response = await fetch('/api/calendar/providers');
+      if (!response.ok) return;
+      const data = await response.json();
+      setCalendarProviders(data.providers || []);
+    } catch (error) {
+      console.error('Error fetching calendar providers:', error);
+    }
+  };
+
   const fetchAgent = async () => {
     try {
       const response = await fetch(`/api/agents/${agentId}`);
@@ -282,11 +332,22 @@ export default function AgentEditPage() {
       setAgent(agentData);
       setName(agentData.name);
       setScript(agentData.script);
+      setSelectedCalendarProviderId(agentData.settings?.calendar_provider_id || '');
       const voiceModelValue = agentData.settings?.voice_model || '';
       setVoiceModel(voiceModelValue);
       setVoiceName(voiceModelValue.split('-')[1] || voiceModelValue);
       setLanguage(agentData.settings?.language || 'en-US');
       setResponseSpeed(agentData.settings?.response_speed || 'medium');
+      setVoiceEmotion(agentData.settings?.voice_emotion || '');
+      setInterruptionSensitivity(agentData.settings?.interruption_sensitivity ?? 0.5);
+      setEnableBackchannel(agentData.settings?.enable_backchannel ?? true);
+      setBackchannelFrequency(agentData.settings?.backchannel_frequency ?? 0.8);
+      setBackchannelWordsInput(Array.isArray(agentData.settings?.backchannel_words)
+        ? agentData.settings.backchannel_words.join(', ')
+        : 'yeah, uh-huh, okay');
+      setEndCallAfterSilenceSeconds(
+        String(Math.round((agentData.settings?.end_call_after_silence_ms ?? 600000) / 1000))
+      );
 
       // Load background sound settings
       const ambientSound = agentData.settings?.ambient_sound;
@@ -300,6 +361,7 @@ export default function AgentEditPage() {
         enabled: hasToolEnabled(existingTools, tool.type)
       })));
       setTransferPhone(agentData.settings?.transfer_phone || '');
+      setSalesAgentConfig(agentData.settings?.salesAgentConfig || null);
 
     } catch (err: any) {
       setError(err.message);
@@ -311,6 +373,16 @@ export default function AgentEditPage() {
   const handleVoiceSelect = (voice: Voice) => {
     setVoiceModel(voice.voice_id);
     setVoiceName(voice.voice_name);
+    closeVoiceModal();
+  };
+
+  const closeVoiceModal = () => {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+    }
+    setPlayingVoiceId(null);
+    setCurrentAudio(null);
     setShowVoiceModal(false);
   };
 
@@ -381,7 +453,7 @@ export default function AgentEditPage() {
         booking: enabledTools.has('book_appointment'),
         availability: enabledTools.has('check_availability'),
         sms: enabledTools.has('send_sms'),
-        transfer: enabledTools.has('transfer_call'),
+        transfer: isOutboundSalesAgent ? false : enabledTools.has('transfer_call'),
       };
 
       const appUrl = process.env.NEXT_PUBLIC_APP_URL || '';
@@ -391,6 +463,10 @@ export default function AgentEditPage() {
           'Calendar tools require a public NEXT_PUBLIC_APP_URL (not localhost). Use your deployed URL or a tunnel (e.g. ngrok), then save again.'
         );
       }
+
+      const mergedSalesConfig = isOutboundSalesAgent
+        ? (salesAgentConfig || agent?.settings?.salesAgentConfig || null)
+        : undefined;
 
       const response = await fetch(`/api/agents/${agentId}`, {
         method: 'PUT',
@@ -402,9 +478,20 @@ export default function AgentEditPage() {
             voice_model: voiceModel,
             language,
             response_speed: responseSpeed,
+            voice_emotion: voiceEmotion || undefined,
+            interruption_sensitivity: interruptionSensitivity,
+            enable_backchannel: enableBackchannel,
+            backchannel_frequency: backchannelFrequency,
+            backchannel_words: enableBackchannel
+              ? backchannelWordsInput.split(',').map((word) => word.trim()).filter(Boolean)
+              : undefined,
+            end_call_after_silence_ms:
+              Math.max(10, parseInt(endCallAfterSilenceSeconds || '600', 10) || 600) * 1000,
             tools_config: toolsConfig,
+            calendar_provider_id: selectedCalendarProviderId || undefined,
             ambient_sound: backgroundSound !== 'none' ? backgroundSound : undefined,
             ambient_sound_volume: backgroundSound !== 'none' ? backgroundSoundVolume : undefined,
+            salesAgentConfig: mergedSalesConfig || undefined,
           },
           transfer_phone: transferPhone || undefined,
           webhook_urls: webhookUrls,
@@ -470,6 +557,38 @@ export default function AgentEditPage() {
     setAvailableTools(prev => prev.map(tool =>
       tool.type === toolType ? { ...tool, enabled: !tool.enabled } : tool
     ));
+  };
+
+  const handleSalesCsvUpload = async (file: File) => {
+    setSalesCsvUploading(true);
+    setSalesCsvError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch('/api/prospects/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setSalesCsvError(data?.error || 'Upload failed');
+        return;
+      }
+
+      setSalesAgentConfig((prev: any) => ({
+        ...(prev || {}),
+        dataSource: 'csv_upload',
+        csvFileId: data.id,
+        csvFileName: data.name,
+        csvRowCount: data.rowCount,
+      }));
+    } catch (error) {
+      setSalesCsvError('Upload failed');
+    } finally {
+      setSalesCsvUploading(false);
+    }
   };
 
   const commitTranscriptForRole = (role: 'user' | 'agent') => {
@@ -770,8 +889,15 @@ export default function AgentEditPage() {
                   >
                     <option value="en-US">English (US)</option>
                     <option value="en-GB">English (UK)</option>
-                    <option value="es-ES">Spanish</option>
+                    <option value="en-IN">English (India)</option>
+                    <option value="es-ES">Spanish (Spain)</option>
+                    <option value="es-419">Spanish (LatAm)</option>
                     <option value="fr-FR">French</option>
+                    <option value="de-DE">German</option>
+                    <option value="pt-BR">Portuguese (Brazil)</option>
+                    <option value="pt-PT">Portuguese (Portugal)</option>
+                    <option value="hi-IN">Hindi</option>
+                    <option value="ja-JP">Japanese</option>
                   </select>
                 </div>
 
@@ -789,6 +915,104 @@ export default function AgentEditPage() {
                     <option value="medium">Medium</option>
                     <option value="slow">Slow</option>
                   </select>
+                </div>
+
+                {/* Voice Emotion */}
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Voice Emotion
+                  </label>
+                  <select
+                    value={voiceEmotion}
+                    onChange={(e) => setVoiceEmotion(e.target.value)}
+                    className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="">Default</option>
+                    <option value="calm">Calm</option>
+                    <option value="sympathetic">Sympathetic</option>
+                    <option value="happy">Happy</option>
+                    <option value="sad">Sad</option>
+                    <option value="angry">Angry</option>
+                    <option value="fearful">Fearful</option>
+                    <option value="surprised">Surprised</option>
+                  </select>
+                </div>
+
+                {/* Interruption Sensitivity */}
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Interruption Sensitivity ({interruptionSensitivity.toFixed(2)})
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={interruptionSensitivity}
+                    onChange={(e) => setInterruptionSensitivity(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+
+                {/* Backchannel Settings */}
+                <div className="rounded-lg border bg-muted/30 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <label className="text-sm font-medium">Enable Active Listening Responses</label>
+                    <input
+                      type="checkbox"
+                      checked={enableBackchannel}
+                      onChange={(e) => setEnableBackchannel(e.target.checked)}
+                      className="h-4 w-4"
+                    />
+                  </div>
+                  {enableBackchannel && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                          Backchannel Frequency ({backchannelFrequency.toFixed(2)})
+                        </label>
+                        <p className="mb-1 text-xs text-muted-foreground">
+                          How often the agent says brief acknowledgements while the caller is speaking.
+                        </p>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={backchannelFrequency}
+                          onChange={(e) => setBackchannelFrequency(parseFloat(e.target.value))}
+                          className="w-full"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                          Acknowledgement Phrases (comma separated)
+                        </label>
+                        <input
+                          type="text"
+                          value={backchannelWordsInput}
+                          onChange={(e) => setBackchannelWordsInput(e.target.value)}
+                          className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                          placeholder="yeah, uh-huh, okay"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* End Call After Silence */}
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    End Call After Silence (seconds, min 10)
+                  </label>
+                  <input
+                    type="number"
+                    min={10}
+                    step={1}
+                    value={endCallAfterSilenceSeconds}
+                    onChange={(e) => setEndCallAfterSilenceSeconds(e.target.value)}
+                    className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
                 </div>
 
                 {/* Background Sound */}
@@ -847,14 +1071,221 @@ export default function AgentEditPage() {
                 Define how your agent behaves, responds, and handles conversations
               </p>
 
-              <textarea
-                value={script}
-                onChange={(e) => setScript(e.target.value)}
-                rows={20}
-                className="w-full rounded-lg border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                placeholder="Enter your agent's instructions and behavior guidelines..."
-              />
+              <div className="relative">
+                <textarea
+                  value={script}
+                  onChange={(e) => setScript(e.target.value)}
+                  rows={20}
+                  className="w-full rounded-lg border px-3 py-2 pr-12 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  placeholder="Enter your agent's instructions and behavior guidelines..."
+                />
+                <button
+                  type="button"
+                  onClick={() => setIsPromptExpanded(true)}
+                  className="absolute bottom-2 right-2 rounded-md border bg-background/90 p-2 text-muted-foreground transition-colors hover:text-foreground"
+                  title="Open full-size prompt editor"
+                  aria-label="Open full-size prompt editor"
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </button>
+              </div>
             </div>
+
+            {agent?.settings?.template_id === 'sales-agent-outbound' && (
+              <div className="rounded-lg border bg-card p-6">
+                <h2 className="mb-4 text-xl font-semibold">Outbound Sales Settings</h2>
+                <div className="space-y-6">
+                  <div>
+                    <label className="mb-2 block text-sm font-medium">Lead Source</label>
+                    <select
+                      value={salesAgentConfig?.dataSource || 'csv_upload'}
+                      onChange={(e) =>
+                        setSalesAgentConfig((prev: any) => ({
+                          ...(prev || {}),
+                          dataSource: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    >
+                      <option value="csv_upload">CSV Upload</option>
+                      <option value="google_sheets">Google Sheets</option>
+                    </select>
+                  </div>
+
+                  {(salesAgentConfig?.dataSource || 'csv_upload') === 'csv_upload' ? (
+                    <div className="space-y-3 rounded-lg border p-4">
+                      <div className="text-sm">
+                        Current CSV:{' '}
+                        <strong>{salesAgentConfig?.csvFileName || salesAgentConfig?.csvFileId || 'None'}</strong>
+                        {salesAgentConfig?.csvRowCount ? ` (${salesAgentConfig.csvRowCount} rows)` : ''}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="cursor-pointer rounded-lg border px-3 py-2 text-sm hover:bg-muted">
+                          {salesCsvUploading ? 'Uploading...' : 'Upload New CSV'}
+                          <input
+                            type="file"
+                            accept=".csv"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) handleSalesCsvUpload(file);
+                            }}
+                          />
+                        </label>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() =>
+                            setSalesAgentConfig((prev: any) => ({
+                              ...(prev || {}),
+                              csvFileId: '',
+                              csvFileName: '',
+                              csvRowCount: 0,
+                            }))
+                          }
+                        >
+                          Remove CSV
+                        </Button>
+                      </div>
+                      {salesCsvError && (
+                        <div className="rounded bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                          {salesCsvError}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="grid gap-3 rounded-lg border p-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">Spreadsheet ID</label>
+                        <input
+                          type="text"
+                          value={salesAgentConfig?.inputSheetId || ''}
+                          onChange={(e) =>
+                            setSalesAgentConfig((prev: any) => ({
+                              ...(prev || {}),
+                              inputSheetId: e.target.value,
+                            }))
+                          }
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">Sheet Tab Name</label>
+                        <input
+                          type="text"
+                          value={salesAgentConfig?.inputSheetName || ''}
+                          onChange={(e) =>
+                            setSalesAgentConfig((prev: any) => ({
+                              ...(prev || {}),
+                              inputSheetName: e.target.value,
+                            }))
+                          }
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="rounded-lg border p-4">
+                    <h3 className="mb-3 text-sm font-semibold">Calling Schedule</h3>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">Type</label>
+                        <select
+                          value={salesAgentConfig?.schedule?.type || 'weekly'}
+                          onChange={(e) =>
+                            setSalesAgentConfig((prev: any) => ({
+                              ...(prev || {}),
+                              schedule: { ...(prev?.schedule || {}), type: e.target.value },
+                            }))
+                          }
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                        >
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekdays</option>
+                          <option value="custom">Custom</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">Timezone</label>
+                        <input
+                          type="text"
+                          value={salesAgentConfig?.schedule?.timezone || 'America/Toronto'}
+                          onChange={(e) =>
+                            setSalesAgentConfig((prev: any) => ({
+                              ...(prev || {}),
+                              schedule: { ...(prev?.schedule || {}), timezone: e.target.value },
+                            }))
+                          }
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">Start Time</label>
+                        <input
+                          type="time"
+                          value={salesAgentConfig?.schedule?.startTime || '09:00'}
+                          onChange={(e) =>
+                            setSalesAgentConfig((prev: any) => ({
+                              ...(prev || {}),
+                              schedule: { ...(prev?.schedule || {}), startTime: e.target.value },
+                            }))
+                          }
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">End Time</label>
+                        <input
+                          type="time"
+                          value={salesAgentConfig?.schedule?.endTime || '17:00'}
+                          onChange={(e) =>
+                            setSalesAgentConfig((prev: any) => ({
+                              ...(prev || {}),
+                              schedule: { ...(prev?.schedule || {}), endTime: e.target.value },
+                            }))
+                          }
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">Gap Between Calls (minutes)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={salesAgentConfig?.schedule?.callIntervalMinutes ?? 15}
+                          onChange={(e) =>
+                            setSalesAgentConfig((prev: any) => ({
+                              ...(prev || {}),
+                              schedule: { ...(prev?.schedule || {}), callIntervalMinutes: parseInt(e.target.value || '15', 10) },
+                            }))
+                          }
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">Max Calls Per Day</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={salesAgentConfig?.maxCallsPerDay ?? 100}
+                          onChange={(e) =>
+                            setSalesAgentConfig((prev: any) => ({
+                              ...(prev || {}),
+                              maxCallsPerDay: parseInt(e.target.value || '100', 10),
+                            }))
+                          }
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-3 text-xs text-muted-foreground">
+                      Saved custom slots: {Array.isArray(salesAgentConfig?.schedule?.specificDateTimes) ? salesAgentConfig.schedule.specificDateTimes.length : 0}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -902,20 +1333,42 @@ export default function AgentEditPage() {
                   </p>
                 </div>
 
-                {/* Transfer Phone */}
+                {!isOutboundSalesAgent && (
+                  <div>
+                    <label className="mb-2 block text-sm font-medium">
+                      Transfer Phone Number
+                    </label>
+                    <input
+                      type="tel"
+                      value={transferPhone}
+                      onChange={(e) => setTransferPhone(e.target.value)}
+                      placeholder="+1234567890"
+                      className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Required for call transfer tool
+                    </p>
+                  </div>
+                )}
+
                 <div>
                   <label className="mb-2 block text-sm font-medium">
-                    Transfer Phone Number
+                    Calendar For This Agent
                   </label>
-                  <input
-                    type="tel"
-                    value={transferPhone}
-                    onChange={(e) => setTransferPhone(e.target.value)}
-                    placeholder="+1234567890"
+                  <select
+                    value={selectedCalendarProviderId}
+                    onChange={(e) => setSelectedCalendarProviderId(e.target.value)}
                     className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                  />
+                  >
+                    <option value="">Pillow Internal Calendar (built-in)</option>
+                    {calendarProviders.map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.provider.toUpperCase()} {provider.provider_email ? `- ${provider.provider_email}` : ''}
+                      </option>
+                    ))}
+                  </select>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Required for call transfer tool
+                    Availability and bookings from this agent will use Pillow Internal Calendar unless you choose Google/Outlook.
                   </p>
                 </div>
               </div>
@@ -929,7 +1382,9 @@ export default function AgentEditPage() {
               </p>
 
               <div className="space-y-3">
-                {availableTools.map((tool) => (
+                {availableTools
+                  .filter((tool) => !(isOutboundSalesAgent && tool.type === 'transfer_call'))
+                  .map((tool) => (
                   <div
                     key={tool.type}
                     className={`flex items-start gap-4 rounded-lg border p-4 transition-colors ${
@@ -1091,26 +1546,31 @@ export default function AgentEditPage() {
 
         {/* Voice Selection Modal */}
         {showVoiceModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="max-h-[80vh] w-full max-w-4xl overflow-auto rounded-lg bg-card p-6">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-2xl font-bold">Select Voice</h2>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+            <div className="max-h-[85vh] w-full max-w-5xl overflow-auto rounded-2xl border border-white/10 bg-card shadow-2xl">
+              <div className="mb-4 flex items-center justify-between border-b border-white/10 bg-gradient-to-r from-primary/10 via-background to-secondary/10 px-5 py-4">
+                <div>
+                  <h2 className="text-2xl font-bold">Select Voice</h2>
+                  <p className="text-xs text-muted-foreground">
+                    {filteredVoices.length} voices available
+                  </p>
+                </div>
                 <button
-                  onClick={() => setShowVoiceModal(false)}
-                  className="rounded-lg p-2 hover:bg-muted"
+                  onClick={closeVoiceModal}
+                  className="rounded-lg p-2 transition-colors hover:bg-muted/70"
                 >
                   <X className="h-5 w-5" />
                 </button>
               </div>
 
               {/* Filters */}
-              <div className="mb-4 flex flex-wrap gap-3">
+              <div className="mb-4 flex flex-wrap gap-3 border-b border-white/10 px-5 pb-4">
                 <div>
                   <label className="mb-1 block text-sm font-medium">Provider</label>
                   <select
                     value={voiceProvider}
                     onChange={(e) => setVoiceProvider(e.target.value)}
-                    className="rounded-lg border px-3 py-2 text-sm"
+                    className="rounded-xl border bg-card px-3 py-2 text-sm"
                   >
                     <option value="elevenlabs">ElevenLabs</option>
                     <option value="openai">OpenAI</option>
@@ -1122,7 +1582,7 @@ export default function AgentEditPage() {
                   <select
                     value={genderFilter}
                     onChange={(e) => setGenderFilter(e.target.value)}
-                    className="rounded-lg border px-3 py-2 text-sm"
+                    className="rounded-xl border bg-card px-3 py-2 text-sm"
                   >
                     <option value="all">All</option>
                     <option value="male">Male</option>
@@ -1136,7 +1596,7 @@ export default function AgentEditPage() {
                     <select
                       value={accentFilter}
                       onChange={(e) => setAccentFilter(e.target.value)}
-                      className="rounded-lg border px-3 py-2 text-sm"
+                      className="rounded-xl border bg-card px-3 py-2 text-sm"
                     >
                       <option value="all">All</option>
                       {availableAccents.map((accent) => (
@@ -1155,12 +1615,13 @@ export default function AgentEditPage() {
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Search voices..."
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    className="w-full rounded-xl border bg-card px-3 py-2 text-sm"
                   />
                 </div>
               </div>
 
               {/* Voice Grid */}
+              <div className="px-5 pb-5">
               {loadingVoices ? (
                 <div className="py-12 text-center text-muted-foreground">
                   Loading voices...
@@ -1175,8 +1636,8 @@ export default function AgentEditPage() {
                     <button
                       key={voice.voice_id}
                       onClick={() => handleVoiceSelect(voice)}
-                      className={`flex items-center justify-between rounded-lg border p-4 text-left transition-colors hover:bg-muted ${
-                        voiceModel === voice.voice_id ? 'border-primary bg-primary/5' : ''
+                      className={`flex items-center justify-between rounded-xl border p-4 text-left transition-all hover:bg-muted ${
+                        voiceModel === voice.voice_id ? 'border-primary bg-primary/10 shadow-sm' : ''
                       }`}
                     >
                       <div className="flex-1">
@@ -1190,7 +1651,7 @@ export default function AgentEditPage() {
                       {voice.preview_audio_url && (
                         <button
                           onClick={(e) => handlePlayVoice(voice.voice_id, voice.preview_audio_url!, e)}
-                          className="ml-2 rounded-lg p-2 hover:bg-background"
+                          className="ml-2 rounded-lg p-2 transition-colors hover:bg-background"
                         >
                           {playingVoiceId === voice.voice_id ? (
                             <Pause className="h-4 w-4" />
@@ -1203,6 +1664,7 @@ export default function AgentEditPage() {
                   ))}
                 </div>
               )}
+              </div>
             </div>
           </div>
         )}
@@ -1238,6 +1700,9 @@ export default function AgentEditPage() {
                         maxLength={3}
                         className="w-full rounded-lg border px-3 py-2 text-sm"
                       />
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        If you see "No phone numbers of this area code", try a different code (e.g., 415, 212, 647) or switch provider.
+                      </p>
                     </div>
                     <div>
                       <label className="mb-1 block text-sm">Nickname (optional)</label>
@@ -1324,6 +1789,32 @@ export default function AgentEditPage() {
                     </div>
                   )}
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isPromptExpanded && (
+          <div className="fixed inset-0 z-50 bg-black/60 p-4">
+            <div className="mx-auto flex h-full w-full max-w-6xl flex-col rounded-lg border bg-card shadow-lg">
+              <div className="flex items-center justify-between border-b p-4">
+                <h2 className="text-lg font-semibold">Agent Script / Prompt</h2>
+                <button
+                  type="button"
+                  onClick={() => setIsPromptExpanded(false)}
+                  className="rounded-lg p-2 hover:bg-muted"
+                  aria-label="Close prompt editor"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="flex-1 p-4">
+                <textarea
+                  value={script}
+                  onChange={(e) => setScript(e.target.value)}
+                  className="h-full w-full resize-none rounded-lg border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  placeholder="Enter your agent's instructions and behavior guidelines..."
+                />
               </div>
             </div>
           </div>
