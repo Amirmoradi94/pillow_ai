@@ -83,54 +83,58 @@ export async function PATCH(
     }
 
     const targetAgentId = nextAgentId === undefined ? (settings.agent_id || null) : (nextAgentId || null);
+    if (!targetAgentId) {
+      return NextResponse.json(
+        { error: 'Calendar must be linked to a voice agent' },
+        { status: 400 }
+      );
+    }
+
     let agent: any = null;
-    if (targetAgentId) {
-      const { data: agentData } = await supabase
-        .from('voice_agents')
-        .select('id, tenant_id, name, settings')
-        .eq('id', targetAgentId)
+    const { data: agentData } = await supabase
+      .from('voice_agents')
+      .select('id, tenant_id, name, settings')
+      .eq('id', targetAgentId)
+      .eq('tenant_id', user.tenantId)
+      .single();
+
+    if (!agentData) {
+      return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
+    }
+    agent = agentData;
+
+    if (bookingSettingsId) {
+      const { data: otherForAgent } = await supabase
+        .from('booking_settings')
+        .select('id')
         .eq('tenant_id', user.tenantId)
-        .single();
-
-      if (!agentData) {
-        return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
+        .eq('agent_id', targetAgentId)
+        .neq('id', bookingSettingsId)
+        .maybeSingle();
+      if (otherForAgent?.id) {
+        return NextResponse.json(
+          { error: 'Selected agent already has another calendar assigned' },
+          { status: 400 }
+        );
       }
-      agent = agentData;
+    } else {
+      const { data: existingForAgent, error: existingForAgentError } = await supabase
+        .from('booking_settings')
+        .select('id')
+        .eq('tenant_id', user.tenantId)
+        .eq('agent_id', targetAgentId)
+        .maybeSingle();
 
-      if (bookingSettingsId) {
-        const { data: otherForAgent } = await supabase
-          .from('booking_settings')
-          .select('id')
-          .eq('tenant_id', user.tenantId)
-          .eq('agent_id', targetAgentId)
-          .neq('id', bookingSettingsId)
-          .maybeSingle();
-        if (otherForAgent?.id) {
-          return NextResponse.json(
-            { error: 'Selected agent already has another calendar assigned' },
-            { status: 400 }
-          );
-        }
-      } else {
-        const { data: existingForAgent, error: existingForAgentError } = await supabase
-          .from('booking_settings')
-          .select('id')
-          .eq('tenant_id', user.tenantId)
-          .eq('agent_id', targetAgentId)
-          .maybeSingle();
-
-        if (existingForAgentError && !isBookingSettingsUnavailable(existingForAgentError)) {
-          throw existingForAgentError;
-        }
-
-        if (existingForAgent?.id) {
-          return NextResponse.json(
-            { error: 'Selected agent already has another calendar assigned' },
-            { status: 400 }
-          );
-        }
+      if (existingForAgentError && !isBookingSettingsUnavailable(existingForAgentError)) {
+        throw existingForAgentError;
       }
 
+      if (existingForAgent?.id) {
+        return NextResponse.json(
+          { error: 'Selected agent already has another calendar assigned' },
+          { status: 400 }
+        );
+      }
     }
 
     const { data: internalUser } = await supabase
@@ -240,39 +244,67 @@ export async function PATCH(
 
     // Update booking_settings when available. For fallback cards, attempt upsert by (tenant_id, agent_id).
     let persistedBookingSettingsId = bookingSettingsId;
-    if (targetAgentId) {
-      if (bookingSettingsId) {
-        const { error: settingsError } = await supabase
+    if (bookingSettingsId) {
+      const { error: settingsError } = await supabase
+        .from('booking_settings')
+        .update({
+          agent_id: targetAgentId,
+          assignable_users: assignableUsers as any,
+          distribution_strategy: 'specific_user',
+          event_type_config: eventTypeConfig as any,
+        })
+        .eq('id', bookingSettingsId)
+        .eq('tenant_id', user.tenantId);
+
+      if (settingsError && !isBookingSettingsUnavailable(settingsError)) {
+        throw new Error(`Failed to update booking settings: ${settingsError.message || 'unknown error'}`);
+      }
+    } else {
+      const { data: existingBooking, error: existingBookingError } = await supabase
+        .from('booking_settings')
+        .select('id')
+        .eq('tenant_id', user.tenantId)
+        .eq('agent_id', targetAgentId)
+        .maybeSingle();
+
+      if (existingBookingError && !isBookingSettingsUnavailable(existingBookingError)) {
+        throw new Error(`Failed to look up booking settings: ${existingBookingError.message || 'unknown error'}`);
+      }
+
+      if (existingBooking?.id) {
+        const { data: updated, error: updateError } = await supabase
           .from('booking_settings')
           .update({
-            agent_id: targetAgentId,
             assignable_users: assignableUsers as any,
             distribution_strategy: 'specific_user',
             event_type_config: eventTypeConfig as any,
           })
-          .eq('id', bookingSettingsId)
-          .eq('tenant_id', user.tenantId);
+          .eq('id', existingBooking.id)
+          .eq('tenant_id', user.tenantId)
+          .select('id')
+          .single();
 
-        if (settingsError && !isBookingSettingsUnavailable(settingsError)) {
-          throw new Error(`Failed to update booking settings: ${settingsError.message || 'unknown error'}`);
+        if (updateError && !isBookingSettingsUnavailable(updateError)) {
+          throw new Error(`Failed to update booking settings: ${updateError.message || 'unknown error'}`);
         }
+        persistedBookingSettingsId = updated?.id || existingBooking.id;
       } else {
-        const { data: upserted, error: upsertError } = await supabase
+        const { data: inserted, error: insertError } = await supabase
           .from('booking_settings')
-          .upsert({
+          .insert({
             tenant_id: user.tenantId,
             agent_id: targetAgentId,
             assignable_users: assignableUsers as any,
             distribution_strategy: 'specific_user',
             event_type_config: eventTypeConfig as any,
-          }, { onConflict: 'tenant_id,agent_id' })
+          })
           .select('id')
           .single();
 
-        if (upsertError && !isBookingSettingsUnavailable(upsertError)) {
-          throw new Error(`Failed to update booking settings: ${upsertError.message || 'unknown error'}`);
+        if (insertError && !isBookingSettingsUnavailable(insertError)) {
+          throw new Error(`Failed to create booking settings: ${insertError.message || 'unknown error'}`);
         }
-        persistedBookingSettingsId = upserted?.id || null;
+        persistedBookingSettingsId = inserted?.id || null;
       }
     }
 
@@ -306,6 +338,196 @@ export async function PATCH(
     console.error('Agent calendar update error:', error);
     return NextResponse.json(
       { error: 'Failed to update agent calendar', details: error.message },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const user = await requireAuth();
+    if (!user.tenantId) {
+      return NextResponse.json({ error: 'No tenant found' }, { status: 400 });
+    }
+    const supabase = await createServiceClient();
+
+    const rawId = params.id;
+    const fallbackAgentId = rawId.startsWith('fallback-') ? rawId.slice('fallback-'.length) : null;
+    const bookingSettingsId = fallbackAgentId ? null : rawId;
+
+    if (!rawId) {
+      return NextResponse.json(
+        { error: 'Missing required field: id' },
+        { status: 400 }
+      );
+    }
+
+    // Get booking settings to find availability rule ID
+    let availabilityRuleId: string | null = null;
+    let agentId: string | null = null;
+
+    if (bookingSettingsId) {
+      const { data: settings } = await supabase
+        .from('booking_settings')
+        .select('id, tenant_id, agent_id, event_type_config')
+        .eq('id', bookingSettingsId)
+        .eq('tenant_id', user.tenantId)
+        .single();
+
+      if (!settings?.id) {
+        return NextResponse.json({ error: 'Calendar not found' }, { status: 404 });
+      }
+
+      availabilityRuleId = settings.event_type_config?.availability_rule_id;
+      agentId = settings.agent_id;
+
+      // Delete trigger events associated with this calendar
+      if (agentId) {
+        const { error: deleteEventsError } = await supabase
+          .from('calendar_events')
+          .delete()
+          .eq('tenant_id', user.tenantId)
+          .eq('agent_id', agentId)
+          .eq('booked_by', 'voice_agent');
+
+        if (deleteEventsError && !isBookingSettingsUnavailable(deleteEventsError)) {
+          console.warn('Failed to delete calendar events:', deleteEventsError);
+        }
+      }
+
+      // Delete availability rule if exists
+      if (availabilityRuleId) {
+        const { error: deleteRuleError } = await supabase
+          .from('availability_rules')
+          .delete()
+          .eq('id', availabilityRuleId)
+          .eq('tenant_id', user.tenantId);
+
+        if (deleteRuleError && !isAvailabilityRulesUnavailable(deleteRuleError)) {
+          console.warn('Failed to delete availability rule:', deleteRuleError);
+        }
+      }
+
+      // Delete booking settings
+      const { error: deleteSettingsError } = await supabase
+        .from('booking_settings')
+        .delete()
+        .eq('id', bookingSettingsId)
+        .eq('tenant_id', user.tenantId);
+
+      if (deleteSettingsError && !isBookingSettingsUnavailable(deleteSettingsError)) {
+        throw new Error(`Failed to delete booking settings: ${deleteSettingsError.message || 'unknown error'}`);
+      }
+
+      // Clear calendar_provider_id from agent settings if agent exists
+      if (agentId) {
+        const { data: agent } = await supabase
+          .from('voice_agents')
+          .select('id, settings')
+          .eq('id', agentId)
+          .eq('tenant_id', user.tenantId)
+          .single();
+
+        if (agent?.id) {
+          await supabase
+            .from('voice_agents')
+            .update({
+              settings: {
+                ...(agent as any).settings,
+                calendar_provider_id: null,
+              },
+            })
+            .eq('id', agent.id);
+        }
+      }
+    } else if (fallbackAgentId) {
+      // Fallback mode: try to delete by agent_id
+      agentId = fallbackAgentId;
+
+      // Delete trigger events
+      const { error: deleteEventsError } = await supabase
+        .from('calendar_events')
+        .delete()
+        .eq('tenant_id', user.tenantId)
+        .eq('agent_id', agentId)
+        .eq('booked_by', 'voice_agent');
+
+      if (deleteEventsError) {
+        console.warn('Failed to delete calendar events:', deleteEventsError);
+      }
+
+      // Try to delete booking_settings by agent_id
+      const { data: existingBooking } = await supabase
+        .from('booking_settings')
+        .select('id, event_type_config')
+        .eq('tenant_id', user.tenantId)
+        .eq('agent_id', agentId)
+        .maybeSingle();
+
+      if (existingBooking?.id) {
+        availabilityRuleId = existingBooking.event_type_config?.availability_rule_id;
+
+        const { error: deleteSettingsError } = await supabase
+          .from('booking_settings')
+          .delete()
+          .eq('id', existingBooking.id)
+          .eq('tenant_id', user.tenantId);
+
+        if (deleteSettingsError && !isBookingSettingsUnavailable(deleteSettingsError)) {
+          console.warn('Failed to delete booking settings:', deleteSettingsError);
+        }
+      }
+
+      // Delete availability rule if exists
+      if (availabilityRuleId) {
+        const { error: deleteRuleError } = await supabase
+          .from('availability_rules')
+          .delete()
+          .eq('id', availabilityRuleId)
+          .eq('tenant_id', user.tenantId);
+
+        if (deleteRuleError && !isAvailabilityRulesUnavailable(deleteRuleError)) {
+          console.warn('Failed to delete availability rule:', deleteRuleError);
+        }
+      }
+
+      // Clear calendar_provider_id from agent settings
+      const { data: agent } = await supabase
+        .from('voice_agents')
+        .select('id, settings')
+        .eq('id', agentId)
+        .eq('tenant_id', user.tenantId)
+        .single();
+
+      if (agent?.id) {
+        await supabase
+          .from('voice_agents')
+          .update({
+            settings: {
+              ...(agent as any).settings,
+              calendar_provider_id: null,
+            },
+          })
+          .eq('id', agent.id);
+      }
+    } else {
+      return NextResponse.json({ error: 'Calendar not found' }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Agent calendar deleted successfully',
+    });
+  } catch (error: any) {
+    if (typeof error?.digest === 'string' && error.digest.startsWith('NEXT_REDIRECT')) {
+      throw error;
+    }
+    console.error('Agent calendar delete error:', error);
+    return NextResponse.json(
+      { error: 'Failed to delete agent calendar', details: error.message },
       { status: 500 }
     );
   }

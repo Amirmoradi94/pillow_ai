@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { Calendar, dateFnsLocalizer, View } from 'react-big-calendar';
 import { format, parse, startOfWeek, getDay } from 'date-fns';
 import { enUS } from 'date-fns/locale';
+import { toZonedTime } from 'date-fns-tz';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
 
 // Setup the localizer for react-big-calendar
@@ -79,6 +80,7 @@ interface AgentCalendar {
   agent_name: string;
   agent_status: string;
   calendar_name: string;
+  availability_rule_id?: string | null;
   timezone: string;
   slot_duration: number;
   day_start: string;
@@ -86,6 +88,9 @@ interface AgentCalendar {
   calendar_provider_id: string | null;
   owner_user_id: string | null;
   distribution_strategy: string;
+  is_sales_outbound?: boolean;
+  sales_schedule_mode?: 'pattern' | 'specific' | null;
+  sales_specific_slots?: Array<{ date: string; time: string }>;
   provider: {
     id: string;
     type: string;
@@ -108,7 +113,7 @@ export default function CalendarPage() {
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [selectedAgentCalendar, setSelectedAgentCalendar] = useState<AgentCalendar | null>(null);
   const [activeAgentCalendarId, setActiveAgentCalendarId] = useState<string | null>(null);
-  const [view, setView] = useState<View>('month');
+  const [view, setView] = useState<View>('week');
   const [date, setDate] = useState(new Date());
   const [showCreateCalendarModal, setShowCreateCalendarModal] = useState(false);
   const [savingAgentCalendar, setSavingAgentCalendar] = useState(false);
@@ -119,6 +124,29 @@ export default function CalendarPage() {
   const [newCalendarStartTime, setNewCalendarStartTime] = useState('09:00');
   const [newCalendarEndTime, setNewCalendarEndTime] = useState('17:00');
   const [newCalendarSlotDuration, setNewCalendarSlotDuration] = useState(30);
+  const isOutboundCalendarEdit = Boolean(selectedAgentCalendar?.is_sales_outbound);
+  const activeCalendar = useMemo(
+    () => agentCalendars.find((calendar) => calendar.id === activeAgentCalendarId) || null,
+    [agentCalendars, activeAgentCalendarId]
+  );
+  const availabilityHref = useMemo(() => {
+    const params = new URLSearchParams();
+    if (activeCalendar?.availability_rule_id) {
+      params.set('ruleId', activeCalendar.availability_rule_id);
+    }
+    if (activeCalendar?.calendar_name) {
+      params.set('calendarName', activeCalendar.calendar_name);
+    }
+    const query = params.toString();
+    return `/dashboard/calendar/availability${query ? `?${query}` : ''}`;
+  }, [activeCalendar?.availability_rule_id, activeCalendar?.calendar_name]);
+
+  const formatSpecificSlotLabel = (calendar: AgentCalendar) => {
+    const slots = Array.isArray(calendar.sales_specific_slots) ? calendar.sales_specific_slots : [];
+    const first = slots.find((slot) => slot?.date && slot?.time);
+    if (!first) return 'Specific date/time schedule';
+    return `${first.date} ${first.time}${slots.length > 1 ? ` (+${slots.length - 1} more)` : ''}`;
+  };
 
   useEffect(() => {
     fetchProviders();
@@ -142,9 +170,8 @@ export default function CalendarPage() {
       setLoadingEvents(false);
       return;
     }
-    const activeCalendar = agentCalendars.find((calendar) => calendar.id === activeAgentCalendarId) || null;
     fetchEvents(activeCalendar);
-  }, [activeAgentCalendarId, agentCalendars]);
+  }, [activeCalendar, agentCalendars.length]);
 
   const fetchProviders = async () => {
     try {
@@ -176,10 +203,10 @@ export default function CalendarPage() {
     setLoadingEvents(true);
     try {
       const params = new URLSearchParams();
-      if (calendar?.calendar_provider_id) {
-        params.set('calendar_provider_id', calendar.calendar_provider_id);
-      } else if (calendar?.agent_id) {
+      if (calendar?.agent_id) {
         params.set('agent_id', calendar.agent_id);
+      } else if (calendar?.calendar_provider_id) {
+        params.set('calendar_provider_id', calendar.calendar_provider_id);
       } else if (calendar?.owner_user_id) {
         params.set('user_id', calendar.owner_user_id);
       }
@@ -284,6 +311,19 @@ export default function CalendarPage() {
       return;
     }
 
+    const timezone = isOutboundCalendarEdit
+      ? (selectedAgentCalendar?.timezone || 'America/Toronto')
+      : newCalendarTimezone;
+    const dayStart = isOutboundCalendarEdit
+      ? (selectedAgentCalendar?.day_start || '09:00')
+      : newCalendarStartTime;
+    const dayEnd = isOutboundCalendarEdit
+      ? (selectedAgentCalendar?.day_end || '17:00')
+      : newCalendarEndTime;
+    const slotDuration = isOutboundCalendarEdit
+      ? Number(selectedAgentCalendar?.slot_duration || 30)
+      : newCalendarSlotDuration;
+
     setSavingAgentCalendar(true);
     try {
       const response = await fetch(`/api/calendar/agent-calendars/${selectedAgentCalendar.id}`, {
@@ -293,10 +333,10 @@ export default function CalendarPage() {
           agent_id: newCalendarAgentId || null,
           calendar_provider_id: newCalendarProviderId,
           calendar_name: newCalendarName,
-          timezone: newCalendarTimezone,
-          day_start: newCalendarStartTime,
-          day_end: newCalendarEndTime,
-          slot_duration: newCalendarSlotDuration,
+          timezone,
+          day_start: dayStart,
+          day_end: dayEnd,
+          slot_duration: slotDuration,
         }),
       });
 
@@ -383,6 +423,28 @@ export default function CalendarPage() {
     }
   };
 
+  const handleDeleteAgentCalendar = async (calendar: AgentCalendar) => {
+    if (!confirm(`Are you sure you want to delete "${calendar.calendar_name}"? This will remove all associated events and availability rules.`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/calendar/agent-calendars/${calendar.id}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        setMessage({ type: 'success', text: 'Agent calendar deleted successfully' });
+        await fetchAgentCalendars();
+      } else {
+        const data = await response.json();
+        setMessage({ type: 'error', text: data.error || 'Failed to delete calendar' });
+      }
+    } catch (error) {
+      setMessage({ type: 'error', text: 'Failed to delete calendar' });
+    }
+  };
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'active':
@@ -416,14 +478,15 @@ export default function CalendarPage() {
 
   // Convert events for react-big-calendar
   const calendarEvents: CalendarEventDisplay[] = useMemo(() => {
+    const timezone = activeCalendar?.timezone || 'America/Toronto';
     return events.map(event => ({
       id: event.id,
       title: event.title,
-      start: new Date(event.start_time),
-      end: new Date(event.end_time),
+      start: toZonedTime(event.start_time, timezone),
+      end: toZonedTime(event.end_time, timezone),
       resource: event,
     }));
-  }, [events]);
+  }, [events, activeCalendar?.timezone]);
 
   // Event style getter for color coding
   const eventStyleGetter = (event: CalendarEventDisplay) => {
@@ -461,12 +524,21 @@ export default function CalendarPage() {
           <p className="text-muted-foreground">View and manage your appointments</p>
         </div>
         <div className="flex gap-2">
-          <Link href="/dashboard/calendar/availability">
-            <Button variant="outline">
+          {activeCalendar?.availability_rule_id ? (
+            <Link href={availabilityHref}>
+              <Button variant="outline">
+                <Clock className="mr-2 h-4 w-4" />
+                {activeCalendar?.calendar_name
+                  ? `Availability: ${activeCalendar.calendar_name}`
+                  : 'Availability Settings'}
+              </Button>
+            </Link>
+          ) : (
+            <Button variant="outline" disabled>
               <Clock className="mr-2 h-4 w-4" />
               Availability Settings
             </Button>
-          </Link>
+          )}
           <Button variant="outline" onClick={() => setShowSettings(!showSettings)}>
             <Settings className="mr-2 h-4 w-4" />
             Calendar Settings
@@ -553,7 +625,11 @@ export default function CalendarPage() {
                     {cal.agent_name} • {cal.timezone}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    {cal.day_start}-{cal.day_end} • {cal.slot_duration}m
+                    {cal.is_sales_outbound
+                      ? cal.sales_schedule_mode === 'specific'
+                        ? formatSpecificSlotLabel(cal)
+                        : `${cal.day_start}-${cal.day_end} • ${cal.slot_duration}m • Pattern`
+                      : `${cal.day_start}-${cal.day_end} • ${cal.slot_duration}m`}
                   </div>
                   <div className="mt-2 flex items-center justify-between">
                     <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium">
@@ -561,16 +637,29 @@ export default function CalendarPage() {
                         ? `${cal.provider.type.toUpperCase()}${cal.provider.email ? ` · ${cal.provider.email}` : ''}`
                         : 'Pillow Internal Calendar'}
                     </span>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openEditAgentCalendarModal(cal);
-                      }}
-                      className="rounded-md border px-2 py-0.5 text-xs hover:bg-muted"
-                    >
-                      Edit
-                    </button>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEditAgentCalendarModal(cal);
+                        }}
+                        className="rounded-md border px-2 py-0.5 text-xs hover:bg-muted"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteAgentCalendar(cal);
+                        }}
+                        className="rounded-md border px-2 py-0.5 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
+                        title="Delete calendar"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               );
@@ -710,10 +799,13 @@ export default function CalendarPage() {
               events={calendarEvents}
               startAccessor="start"
               endAccessor="end"
+              views={['day', 'week', 'month']}
               view={view}
               onView={setView}
               date={date}
               onNavigate={setDate}
+              step={15}
+              timeslots={1}
               eventPropGetter={eventStyleGetter}
               onSelectEvent={(event) => setSelectedEvent(event.resource)}
               style={{ height: '100%' }}
@@ -789,53 +881,63 @@ export default function CalendarPage() {
                 </p>
               </div>
 
-              <div>
-                <label className="mb-1 block text-sm font-medium">Timezone</label>
-                <select
-                  value={newCalendarTimezone}
-                  onChange={(e) => setNewCalendarTimezone(e.target.value)}
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                >
-                  {CANADA_TIMEZONES.map((timezone) => (
-                    <option key={timezone.value} value={timezone.value}>
-                      {timezone.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {!isOutboundCalendarEdit && (
+                <>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Timezone</label>
+                    <select
+                      value={newCalendarTimezone}
+                      onChange={(e) => setNewCalendarTimezone(e.target.value)}
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                    >
+                      {CANADA_TIMEZONES.map((timezone) => (
+                        <option key={timezone.value} value={timezone.value}>
+                          {timezone.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-              <div>
-                <label className="mb-1 block text-sm font-medium">Slot Duration (minutes)</label>
-                <input
-                  type="number"
-                  min={5}
-                  step={5}
-                  value={newCalendarSlotDuration}
-                  onChange={(e) => setNewCalendarSlotDuration(parseInt(e.target.value || '30', 10))}
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                />
-              </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Slot Duration (minutes)</label>
+                    <input
+                      type="number"
+                      min={5}
+                      step={5}
+                      value={newCalendarSlotDuration}
+                      onChange={(e) => setNewCalendarSlotDuration(parseInt(e.target.value || '30', 10))}
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                    />
+                  </div>
 
-              <div>
-                <label className="mb-1 block text-sm font-medium">Open Time</label>
-                <input
-                  type="time"
-                  value={newCalendarStartTime}
-                  onChange={(e) => setNewCalendarStartTime(e.target.value)}
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                />
-              </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Open Time</label>
+                    <input
+                      type="time"
+                      value={newCalendarStartTime}
+                      onChange={(e) => setNewCalendarStartTime(e.target.value)}
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                    />
+                  </div>
 
-              <div>
-                <label className="mb-1 block text-sm font-medium">Close Time</label>
-                <input
-                  type="time"
-                  value={newCalendarEndTime}
-                  onChange={(e) => setNewCalendarEndTime(e.target.value)}
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
-                />
-              </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Close Time</label>
+                    <input
+                      type="time"
+                      value={newCalendarEndTime}
+                      onChange={(e) => setNewCalendarEndTime(e.target.value)}
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                    />
+                  </div>
+                </>
+              )}
             </div>
+
+            {isOutboundCalendarEdit && (
+              <p className="mt-4 text-xs text-muted-foreground">
+                Timezone and call timing are controlled by the outbound sales schedule configured during agent setup.
+              </p>
+            )}
 
             <div className="mt-6 flex justify-end gap-2">
               <Button variant="outline" onClick={closeAgentCalendarModal}>

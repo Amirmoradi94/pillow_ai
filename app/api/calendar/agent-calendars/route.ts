@@ -1,9 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/supabase/auth';
 import { createServiceClient } from '@/lib/supabase/server';
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 
 type ScheduleBlock = { start: string; end: string };
 type WeeklySchedule = Record<string, ScheduleBlock[]>;
+type OutboundRecurrenceUnit = 'day' | 'week' | 'month';
+type OutboundSchedule = {
+  type?: 'weekly' | 'custom';
+  days?: string[];
+  startTime?: string;
+  endTime?: string;
+  timezone?: string;
+  callIntervalMinutes?: number;
+  customStartDate?: string;
+  customMode?: 'pattern' | 'specific';
+  specificDateTimes?: Array<{ date: string; time: string }>;
+  recurrence?: {
+    enabled?: boolean;
+    interval?: number;
+    unit?: OutboundRecurrenceUnit;
+  };
+};
+
+function getOutboundScheduleFromSettings(settings: any): OutboundSchedule | null {
+  const schedule = settings?.salesAgentConfig?.schedule;
+  if (!schedule || typeof schedule !== 'object') return null;
+  return schedule as OutboundSchedule;
+}
 
 function defaultSchedule(start: string, end: string): WeeklySchedule {
   return {
@@ -39,6 +63,196 @@ function extractDayWindow(schedule: WeeklySchedule | null | undefined): { day_st
     }
   }
   return { day_start: '09:00', day_end: '17:00' };
+}
+
+const DAY_MAP = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const MAX_TRIGGER_EVENTS = 5000;
+const TRIGGER_HORIZON_DAYS = 120;
+const CANADA_TIMEZONES = new Set([
+  'America/St_Johns',
+  'America/Halifax',
+  'America/Toronto',
+  'America/Winnipeg',
+  'America/Edmonton',
+  'America/Vancouver',
+  'America/Whitehorse',
+]);
+
+function parseTimeToMinutes(value: string): number {
+  const [h, m] = (value || '').split(':').map((v) => parseInt(v, 10));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return -1;
+  return h * 60 + m;
+}
+
+function safeTimezone(input?: string): string {
+  if (!input || !CANADA_TIMEZONES.has(input)) return 'America/Toronto';
+  try {
+    Intl.DateTimeFormat('en-US', { timeZone: input });
+    return input;
+  } catch {
+    return 'America/Toronto';
+  }
+}
+
+function isoDateFromDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function addDaysIso(dateIso: string, days: number): string {
+  const d = new Date(`${dateIso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return isoDateFromDate(d);
+}
+
+function daysBetween(startDate: string, endDate: string): number {
+  const s = new Date(`${startDate}T00:00:00Z`);
+  const e = new Date(`${endDate}T00:00:00Z`);
+  return Math.floor((e.getTime() - s.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+function monthsBetween(startDate: string, endDate: string): number {
+  const s = new Date(`${startDate}T00:00:00Z`);
+  const e = new Date(`${endDate}T00:00:00Z`);
+  return (e.getUTCFullYear() - s.getUTCFullYear()) * 12 + (e.getUTCMonth() - s.getUTCMonth());
+}
+
+function dayNameForIsoDate(dateIso: string): string {
+  const d = new Date(`${dateIso}T00:00:00Z`);
+  return DAY_MAP[d.getUTCDay()] || 'monday';
+}
+
+function firstSelectedDayOnOrAfter(dateIso: string, selectedDays: Set<string>): string | null {
+  if (selectedDays.size === 0) return dateIso;
+  for (let i = 0; i < 7; i++) {
+    const candidate = addDaysIso(dateIso, i);
+    if (selectedDays.has(dayNameForIsoDate(candidate))) return candidate;
+  }
+  return null;
+}
+
+function matchesPatternRecurrence(
+  anchorDate: string,
+  dateIso: string,
+  dayName: string,
+  selectedDays: Set<string>,
+  recurrence: OutboundSchedule['recurrence']
+): boolean {
+  if (selectedDays.size > 0 && !selectedDays.has(dayName)) return false;
+  const dayDiff = daysBetween(anchorDate, dateIso);
+  if (dayDiff < 0) return false;
+
+  if (!recurrence?.enabled) return dateIso === anchorDate;
+
+  const interval = Math.max(1, recurrence.interval || 1);
+  const unit = recurrence.unit || 'week';
+  if (unit === 'day') return dayDiff % interval === 0;
+  if (unit === 'week') return Math.floor(dayDiff / 7) % interval === 0;
+
+  const monthDiff = monthsBetween(anchorDate, dateIso);
+  if (monthDiff < 0 || monthDiff % interval !== 0) return false;
+  const startDay = new Date(`${anchorDate}T00:00:00Z`).getUTCDate();
+  const currentDay = new Date(`${dateIso}T00:00:00Z`).getUTCDate();
+  return startDay === currentDay;
+}
+
+function buildTimeSlots(startTime: string, endTime: string, gapMinutes: number): string[] {
+  const start = parseTimeToMinutes(startTime);
+  const end = parseTimeToMinutes(endTime);
+  const gap = Math.max(1, gapMinutes || 15);
+  if (start < 0 || end < 0 || end <= start) return [];
+
+  const slots: string[] = [];
+  for (let minutes = start; minutes < end; minutes += gap) {
+    const hh = String(Math.floor(minutes / 60)).padStart(2, '0');
+    const mm = String(minutes % 60).padStart(2, '0');
+    slots.push(`${hh}:${mm}`);
+  }
+  return slots;
+}
+
+function buildOutboundTriggerEvents(params: {
+  tenantId: string;
+  ownerUserId: string;
+  agentId: string;
+  providerId?: string | null;
+  schedule: OutboundSchedule;
+}): any[] {
+  const schedule = params.schedule;
+  if (schedule?.type !== 'custom') return [];
+
+  const timezone = safeTimezone(schedule.timezone);
+  const now = new Date();
+  const nowLocalDate = formatInTimeZone(now, timezone, 'yyyy-MM-dd');
+  const events: any[] = [];
+
+  const pushEvent = (dateIso: string, time: string) => {
+    if (events.length >= MAX_TRIGGER_EVENTS) return;
+    const startUtc = fromZonedTime(`${dateIso}T${time}:00`, timezone);
+    const slotDurationMinutes = Math.max(15, Number(schedule.callIntervalMinutes || 15));
+    const endUtc = new Date(startUtc.getTime() + slotDurationMinutes * 60 * 1000);
+
+    events.push({
+      tenant_id: params.tenantId,
+      user_id: params.ownerUserId,
+      agent_id: params.agentId,
+      calendar_provider_id: params.providerId || null,
+      title: 'Outbound Sales Trigger',
+      description: 'Cron trigger for outbound sales call',
+      location: null,
+      start_time: startUtc.toISOString(),
+      end_time: endUtc.toISOString(),
+      timezone,
+      all_day: false,
+      status: 'confirmed',
+      booked_by: 'voice_agent',
+      attendees: [],
+      metadata: {
+        source: 'sales_outbound_trigger',
+        schedule_type: 'custom',
+        custom_mode: schedule.customMode || 'pattern',
+        slot_date: dateIso,
+        slot_time: time,
+      },
+      sync_source: 'internal',
+    });
+  };
+
+  if ((schedule.customMode || 'pattern') === 'specific') {
+    for (const slot of schedule.specificDateTimes || []) {
+      if (!slot?.date || !slot?.time) continue;
+      pushEvent(slot.date, slot.time);
+    }
+    return events;
+  }
+
+  const anchorDate = schedule.customStartDate || nowLocalDate;
+  const selectedDays = new Set((schedule.days || []).map((d) => d.toLowerCase()));
+  const timeSlots = buildTimeSlots(schedule.startTime || '09:00', schedule.endTime || '17:00', schedule.callIntervalMinutes || 15);
+  if (!timeSlots.length) return [];
+
+  if (!schedule.recurrence?.enabled) {
+    const firstDate = firstSelectedDayOnOrAfter(anchorDate, selectedDays);
+    if (!firstDate) return [];
+    for (const t of timeSlots) {
+      pushEvent(firstDate, t);
+      if (events.length >= MAX_TRIGGER_EVENTS) break;
+    }
+    return events;
+  }
+
+  for (let i = 0; i <= TRIGGER_HORIZON_DAYS && events.length < MAX_TRIGGER_EVENTS; i++) {
+    const dateIso = addDaysIso(anchorDate, i);
+    const dayName = dayNameForIsoDate(dateIso);
+    if (!matchesPatternRecurrence(anchorDate, dateIso, dayName, selectedDays, schedule.recurrence)) {
+      continue;
+    }
+    for (const t of timeSlots) {
+      pushEvent(dateIso, t);
+      if (events.length >= MAX_TRIGGER_EVENTS) break;
+    }
+  }
+
+  return events;
 }
 
 export async function GET() {
@@ -90,20 +304,27 @@ export async function GET() {
       const fallbackCalendars = (agents || []).map((agent: any) => {
         const providerId = agent?.settings?.calendar_provider_id || null;
         const provider = providerId ? fallbackProvidersById[providerId] : null;
+        const outboundSchedule = getOutboundScheduleFromSettings(agent?.settings);
+        const isSalesOutbound = Boolean(outboundSchedule) || agent?.settings?.template_id === 'sales-agent-outbound';
         return {
           id: `fallback-${agent.id}`,
           agent_id: agent.id,
           agent_name: agent.name || 'Unknown Agent',
           agent_status: agent.status || 'inactive',
           calendar_name: `${agent.name || 'Agent'} Calendar`,
-          timezone: 'UTC',
+          timezone: safeTimezone(outboundSchedule?.timezone || 'America/Toronto'),
           availability_rule_id: null,
-          slot_duration: 30,
-          day_start: '09:00',
-          day_end: '17:00',
+          slot_duration: Number(outboundSchedule?.callIntervalMinutes || 30),
+          day_start: outboundSchedule?.startTime || '09:00',
+          day_end: outboundSchedule?.endTime || '17:00',
           calendar_provider_id: providerId,
           owner_user_id: null,
           distribution_strategy: 'specific_user',
+          is_sales_outbound: isSalesOutbound,
+          sales_schedule_mode: outboundSchedule?.customMode || null,
+          sales_specific_slots: Array.isArray(outboundSchedule?.specificDateTimes)
+            ? outboundSchedule.specificDateTimes
+            : [],
           provider: provider
             ? {
                 id: provider.id,
@@ -122,7 +343,9 @@ export async function GET() {
       });
     }
 
-    const providerIds = (rows || [])
+    const linkedRows = (rows || []).filter((r: any) => Boolean(r?.agent_id && r?.voice_agents?.id));
+
+    const providerIds = linkedRows
       .map((r: any) => (
         r?.voice_agents?.settings?.calendar_provider_id ||
         r?.event_type_config?.calendar_provider_id ||
@@ -139,7 +362,7 @@ export async function GET() {
       providersById = Object.fromEntries((providers || []).map((p: any) => [p.id, p]));
     }
 
-    const availabilityRuleIds = (rows || [])
+    const availabilityRuleIds = linkedRows
       .map((r: any) => r?.event_type_config?.availability_rule_id)
       .filter(Boolean);
 
@@ -152,11 +375,14 @@ export async function GET() {
       rulesById = Object.fromEntries((rules || []).map((rule: any) => [rule.id, rule]));
     }
 
-    const calendars = (rows || []).map((r: any) => {
+    const calendars = linkedRows.map((r: any) => {
       const providerId = r?.voice_agents?.settings?.calendar_provider_id ||
         r?.event_type_config?.calendar_provider_id ||
         (Array.isArray(r?.assignable_users) ? r.assignable_users?.[0]?.calendar_provider_id : undefined);
       const provider = providerId ? providersById[providerId] : null;
+      const agentSettings = r?.voice_agents?.settings || {};
+      const outboundSchedule = getOutboundScheduleFromSettings(agentSettings);
+      const isSalesOutbound = Boolean(outboundSchedule) || agentSettings?.template_id === 'sales-agent-outbound';
       const availabilityRuleId = r?.event_type_config?.availability_rule_id || null;
       const availabilityRule = availabilityRuleId ? rulesById[availabilityRuleId] : null;
       const { day_start, day_end } = extractDayWindow(availabilityRule?.schedule as WeeklySchedule | undefined);
@@ -167,14 +393,19 @@ export async function GET() {
         agent_name: r?.voice_agents?.name || 'Unassigned',
         agent_status: r?.voice_agents?.status || 'inactive',
         calendar_name: r?.event_type_config?.calendar_name || r?.voice_agents?.name || 'Agent Calendar',
-        timezone: r?.event_type_config?.timezone || 'UTC',
+        timezone: safeTimezone(outboundSchedule?.timezone || r?.event_type_config?.timezone || 'America/Toronto'),
         availability_rule_id: availabilityRuleId,
-        slot_duration: Number(r?.event_type_config?.duration || availabilityRule?.slot_duration || 30),
-        day_start,
-        day_end,
+        slot_duration: Number(outboundSchedule?.callIntervalMinutes || r?.event_type_config?.duration || availabilityRule?.slot_duration || 30),
+        day_start: outboundSchedule?.startTime || day_start,
+        day_end: outboundSchedule?.endTime || day_end,
         calendar_provider_id: providerId || null,
         owner_user_id: ownerUserId,
         distribution_strategy: r?.distribution_strategy,
+        is_sales_outbound: isSalesOutbound,
+        sales_schedule_mode: outboundSchedule?.customMode || null,
+        sales_specific_slots: Array.isArray(outboundSchedule?.specificDateTimes)
+          ? outboundSchedule.specificDateTimes
+          : [],
         provider: provider
           ? {
               id: provider.id,
@@ -211,25 +442,41 @@ export async function POST(request: NextRequest) {
     const agentId = body.agent_id as string | undefined;
     const providerId = body.calendar_provider_id as string | undefined;
     const calendarName = (body.calendar_name as string | undefined) || 'Agent Calendar';
-    const timezone = (body.timezone as string | undefined) || 'UTC';
-    const slotDuration = Number(body.slot_duration || 30);
-    const dayStart = (body.day_start as string | undefined) || '09:00';
-    const dayEnd = (body.day_end as string | undefined) || '17:00';
+    const inputTimezone = body.timezone as string | undefined;
+    const inputSlotDuration = Number(body.slot_duration || 30);
+    const inputDayStart = (body.day_start as string | undefined) || '09:00';
+    const inputDayEnd = (body.day_end as string | undefined) || '17:00';
+    const bodySalesSchedule = body.sales_schedule as OutboundSchedule | undefined;
+
+    if (!agentId) {
+      return NextResponse.json(
+        { error: 'Missing required field: agent_id' },
+        { status: 400 }
+      );
+    }
 
     let agent: any = null;
-    if (agentId) {
-      const { data: agentData } = await supabase
-        .from('voice_agents')
-        .select('id, tenant_id, name, settings')
-        .eq('id', agentId)
-        .eq('tenant_id', user.tenantId)
-        .single();
+    const { data: agentData } = await supabase
+      .from('voice_agents')
+      .select('id, tenant_id, name, settings')
+      .eq('id', agentId)
+      .eq('tenant_id', user.tenantId)
+      .single();
 
-      if (!agentData) {
-        return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
-      }
-      agent = agentData;
+    if (!agentData) {
+      return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
     }
+    agent = agentData;
+
+    const hasSalesConfig = Boolean((agent?.settings as any)?.salesAgentConfig);
+    const agentSalesSchedule = (agent?.settings as any)?.salesAgentConfig?.schedule as OutboundSchedule | undefined;
+    const salesSchedule = bodySalesSchedule || agentSalesSchedule;
+    const isOutboundCustomSchedule = hasSalesConfig && salesSchedule?.type === 'custom';
+
+    const timezone = safeTimezone(salesSchedule?.timezone || inputTimezone || 'UTC');
+    const slotDuration = Math.max(1, Number(salesSchedule?.callIntervalMinutes || inputSlotDuration || 30));
+    const dayStart = salesSchedule?.startTime || inputDayStart || '09:00';
+    const dayEnd = salesSchedule?.endTime || inputDayEnd || '17:00';
 
     const { data: internalUser } = await supabase
       .from('users')
@@ -350,33 +597,44 @@ export async function POST(request: NextRequest) {
     let bookingSettings: any = null;
     let bookingError: any = null;
     if (agent?.id) {
-      const result = await supabase
+      const { data: existingBooking, error: existingBookingError } = await supabase
         .from('booking_settings')
-        .upsert({
-          tenant_id: user.tenantId,
-          agent_id: agent.id,
-          assignable_users: assignableUsers as any,
-          distribution_strategy: 'specific_user',
-          event_type_config: eventTypeConfig as any,
-        }, { onConflict: 'tenant_id,agent_id' })
         .select('id')
-        .single();
-      bookingSettings = result.data;
-      bookingError = result.error;
-    } else {
-      const result = await supabase
-        .from('booking_settings')
-        .insert({
-          tenant_id: user.tenantId,
-          agent_id: null,
-          assignable_users: assignableUsers as any,
-          distribution_strategy: 'specific_user',
-          event_type_config: eventTypeConfig as any,
-        })
-        .select('id')
-        .single();
-      bookingSettings = result.data;
-      bookingError = result.error;
+        .eq('tenant_id', user.tenantId)
+        .eq('agent_id', agent.id)
+        .maybeSingle();
+
+      if (existingBookingError && !isBookingSettingsUnavailable(existingBookingError)) {
+        bookingError = existingBookingError;
+      } else if (existingBooking?.id) {
+        const result = await supabase
+          .from('booking_settings')
+          .update({
+            assignable_users: assignableUsers as any,
+            distribution_strategy: 'specific_user',
+            event_type_config: eventTypeConfig as any,
+          })
+          .eq('id', existingBooking.id)
+          .eq('tenant_id', user.tenantId)
+          .select('id')
+          .single();
+        bookingSettings = result.data;
+        bookingError = result.error;
+      } else {
+        const result = await supabase
+          .from('booking_settings')
+          .insert({
+            tenant_id: user.tenantId,
+            agent_id: agent.id,
+            assignable_users: assignableUsers as any,
+            distribution_strategy: 'specific_user',
+            event_type_config: eventTypeConfig as any,
+          })
+          .select('id')
+          .single();
+        bookingSettings = result.data;
+        bookingError = result.error;
+      }
     }
 
     if (bookingError || !bookingSettings) {
@@ -396,6 +654,30 @@ export async function POST(request: NextRequest) {
           },
         })
         .eq('id', agent.id);
+    }
+
+    if (agent?.id && isOutboundCustomSchedule && salesSchedule) {
+      const triggerEvents = buildOutboundTriggerEvents({
+        tenantId: user.tenantId,
+        ownerUserId,
+        agentId: agent.id,
+        providerId: provider?.id || null,
+        schedule: salesSchedule,
+      });
+
+      if (triggerEvents.length > 0) {
+        // Replace previously generated trigger events to keep schedule in sync.
+        await supabase
+          .from('calendar_events')
+          .delete()
+          .eq('tenant_id', user.tenantId)
+          .eq('agent_id', agent.id)
+          .filter('metadata->>source', 'eq', 'sales_outbound_trigger');
+
+        await supabase
+          .from('calendar_events')
+          .insert(triggerEvents as any);
+      }
     }
 
     return NextResponse.json({

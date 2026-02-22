@@ -202,6 +202,53 @@ export async function DELETE(
       // Continue with database deletion even if Retell deletion fails
     }
 
+    // Delete agent-linked calendar events and calendar settings.
+    const { data: agentBookingSettings, error: bookingSettingsQueryError } = await supabase
+      .from('booking_settings')
+      .select('id, event_type_config')
+      .eq('tenant_id', existingAgent.tenant_id)
+      .eq('agent_id', params.id);
+
+    if (bookingSettingsQueryError) {
+      console.warn('Error loading agent booking settings during delete:', bookingSettingsQueryError);
+    }
+
+    const availabilityRuleIds = (agentBookingSettings || [])
+      .map((row: any) => row?.event_type_config?.availability_rule_id as string | undefined)
+      .filter(Boolean);
+
+    const { error: deleteEventsError } = await supabase
+      .from('calendar_events')
+      .delete()
+      .eq('tenant_id', existingAgent.tenant_id)
+      .eq('agent_id', params.id);
+
+    if (deleteEventsError) {
+      console.warn('Error deleting agent calendar events:', deleteEventsError);
+    }
+
+    const { error: deleteBookingSettingsError } = await supabase
+      .from('booking_settings')
+      .delete()
+      .eq('tenant_id', existingAgent.tenant_id)
+      .eq('agent_id', params.id);
+
+    if (deleteBookingSettingsError) {
+      console.warn('Error deleting agent booking settings:', deleteBookingSettingsError);
+    }
+
+    if (availabilityRuleIds.length > 0) {
+      const { error: deleteAvailabilityRulesError } = await supabase
+        .from('availability_rules')
+        .delete()
+        .eq('tenant_id', existingAgent.tenant_id)
+        .in('id', availabilityRuleIds);
+
+      if (deleteAvailabilityRulesError) {
+        console.warn('Error deleting agent availability rules:', deleteAvailabilityRulesError);
+      }
+    }
+
     // Delete from database
     const { error } = await supabase
       .from('voice_agents')

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Plus, Save, Trash2, Clock } from 'lucide-react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 
 interface TimeSlot {
   start: string;
@@ -56,6 +57,9 @@ const DEFAULT_SCHEDULE: Schedule = {
 };
 
 export default function AvailabilityPage() {
+  const searchParams = useSearchParams();
+  const selectedRuleId = searchParams.get('ruleId');
+  const selectedCalendarName = searchParams.get('calendarName');
   const [rules, setRules] = useState<AvailabilityRule[]>([]);
   const [currentRule, setCurrentRule] = useState<AvailabilityRule>({
     name: 'Default Availability',
@@ -75,10 +79,23 @@ export default function AvailabilityPage() {
 
   useEffect(() => {
     fetchRules();
-  }, []);
+  }, [selectedRuleId]);
 
   const fetchRules = async () => {
     try {
+      if (selectedRuleId) {
+        const ruleResponse = await fetch(`/api/calendar/availability-rules/${selectedRuleId}`);
+        if (ruleResponse.ok) {
+          const ruleData = await ruleResponse.json();
+          const rule = ruleData.rule as AvailabilityRule;
+          setRules(rule ? [rule] : []);
+          if (rule) {
+            setCurrentRule(rule);
+          }
+          return;
+        }
+      }
+
       const response = await fetch('/api/calendar/availability-rules');
       if (response.ok) {
         const data = await response.json();
@@ -181,7 +198,11 @@ export default function AvailabilityPage() {
         </Link>
         <div>
           <h1 className="text-3xl font-bold">Availability Settings</h1>
-          <p className="text-muted-foreground">Configure your working hours and booking constraints</p>
+          <p className="text-muted-foreground">
+            {selectedCalendarName
+              ? `Configure working hours for ${selectedCalendarName}`
+              : 'Configure your working hours and booking constraints'}
+          </p>
         </div>
       </div>
 
