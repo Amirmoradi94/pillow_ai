@@ -28,7 +28,7 @@ export interface SalesAgentConfig {
 
   // Schedule (Mandatory)
   schedule: {
-    type: 'daily' | 'weekly' | 'custom';
+    type: 'weekly' | 'custom';
     days: string[]; // ['monday', 'tuesday', etc.]
     startTime: string; // '09:00'
     endTime: string; // '17:00'
@@ -77,18 +77,24 @@ const DAYS_OF_WEEK = [
 ];
 
 const TIMEZONES = [
-  { value: 'America/New_York', label: 'Eastern Time (ET)' },
-  { value: 'America/Chicago', label: 'Central Time (CT)' },
-  { value: 'America/Denver', label: 'Mountain Time (MT)' },
-  { value: 'America/Los_Angeles', label: 'Pacific Time (PT)' },
-  { value: 'America/Phoenix', label: 'Arizona Time' },
-  { value: 'America/Anchorage', label: 'Alaska Time' },
-  { value: 'Pacific/Honolulu', label: 'Hawaii Time' },
-  { value: 'America/Toronto', label: 'Toronto (ET)' },
-  { value: 'America/Vancouver', label: 'Vancouver (PT)' },
+  { value: 'America/St_Johns', label: 'Newfoundland (America/St_Johns)' },
+  { value: 'America/Halifax', label: 'Atlantic (America/Halifax)' },
+  { value: 'America/Toronto', label: 'Eastern (America/Toronto)' },
+  { value: 'America/Winnipeg', label: 'Central (America/Winnipeg)' },
+  { value: 'America/Edmonton', label: 'Mountain (America/Edmonton)' },
+  { value: 'America/Vancouver', label: 'Pacific (America/Vancouver)' },
+  { value: 'America/Whitehorse', label: 'Yukon (America/Whitehorse)' },
 ];
+const QUARTER_HOUR_OPTIONS = Array.from({ length: 24 * 4 }, (_, idx) => {
+  const minutes = idx * 15;
+  const hh = String(Math.floor(minutes / 60)).padStart(2, '0');
+  const mm = String(minutes % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+});
 
 export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) {
+  const TOTAL_STEPS = 4;
+  const LOCAL_FORM_STEPS = 3;
   const [currentStep, setCurrentStep] = useState(1);
 
   // Google Sheets State
@@ -116,11 +122,11 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
   const [isDragOver, setIsDragOver] = useState(false);
 
   // Schedule State
-  const [scheduleType, setScheduleType] = useState<'daily' | 'weekly' | 'custom'>('weekly');
+  const [scheduleType, setScheduleType] = useState<'weekly' | 'custom'>('weekly');
   const [selectedDays, setSelectedDays] = useState<string[]>(['monday', 'tuesday', 'wednesday', 'thursday', 'friday']);
   const [startTime, setStartTime] = useState('09:00');
   const [endTime, setEndTime] = useState('17:00');
-  const [timezone, setTimezone] = useState('America/New_York');
+  const [timezone, setTimezone] = useState('America/Toronto');
   const [callIntervalMinutes, setCallIntervalMinutes] = useState(15);
   const [customStartDate, setCustomStartDate] = useState('');
   const [recurrenceEnabled, setRecurrenceEnabled] = useState(true);
@@ -172,6 +178,11 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
     const [h, m] = value.split(':').map((v) => parseInt(v, 10));
     if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
     return h * 60 + m;
+  };
+
+  const isQuarterHourTime = (value: string): boolean => {
+    const minutes = toMinutes(value);
+    return minutes >= 0 && minutes % 15 === 0;
   };
 
   const leadCount = dataSource === 'csv_upload'
@@ -411,7 +422,9 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
       }
 
       if (customMode === 'specific') {
-        return specificDateTimes.some((slot) => Boolean(slot.date && slot.time));
+        return specificDateTimes.some((slot) =>
+          Boolean(slot.date && slot.time && isQuarterHourTime(slot.time))
+        );
       }
 
       const hasPatternSchedule = selectedDays.length > 0 && startTime && endTime && callIntervalMinutes > 0;
@@ -428,7 +441,7 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
       {/* Progress Steps */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {[1, 2, 3].map((step) => (
+          {Array.from({ length: TOTAL_STEPS }, (_, idx) => idx + 1).map((step) => (
             <div key={step} className="flex items-center">
               <div
                 className={`flex h-10 w-10 items-center justify-center rounded-full font-semibold ${
@@ -441,7 +454,7 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
               >
                 {step < currentStep ? '✓' : step}
               </div>
-              {step < 3 && (
+              {step < TOTAL_STEPS && (
                 <div
                   className={`h-1 w-16 ${
                     step < currentStep ? 'bg-green-500' : 'bg-muted'
@@ -452,7 +465,7 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
           ))}
         </div>
         <div className="text-sm text-muted-foreground">
-          Step {currentStep} of 3
+          Step {currentStep} of {TOTAL_STEPS}
         </div>
       </div>
 
@@ -722,21 +735,7 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
               <label className="mb-3 block text-sm font-medium">
                 Schedule Type
               </label>
-              <div className="grid gap-3 md:grid-cols-3">
-                <button
-                  onClick={() => {
-                    setScheduleType('daily');
-                    setSelectedDays(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']);
-                  }}
-                  className={`rounded-lg border p-4 text-left transition-all ${
-                    scheduleType === 'daily'
-                      ? 'border-primary bg-primary/5'
-                      : 'hover:border-primary/50'
-                  }`}
-                >
-                  <div className="font-semibold">Daily</div>
-                  <div className="text-xs text-muted-foreground">Every day</div>
-                </button>
+              <div className="grid gap-3 md:grid-cols-2">
                 <button
                   onClick={() => {
                     setScheduleType('weekly');
@@ -835,8 +834,7 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                           }}
                           className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                         />
-                        <input
-                          type="time"
+                        <select
                           value={slot.time}
                           onChange={(e) => {
                             const next = [...specificDateTimes];
@@ -844,7 +842,14 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
                             setSpecificDateTimes(next);
                           }}
                           className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                        />
+                        >
+                          <option value="">Select time...</option>
+                          {QUARTER_HOUR_OPTIONS.map((time) => (
+                            <option key={time} value={time}>
+                              {time}
+                            </option>
+                          ))}
+                        </select>
                         <Button
                           type="button"
                           variant="outline"
@@ -1011,9 +1016,7 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
               <p className="text-sm text-muted-foreground">
                 Calls will be made on{' '}
                 <strong>
-                  {scheduleType === 'daily'
-                    ? 'Every day'
-                    : scheduleType === 'weekly'
+                  {scheduleType === 'weekly'
                     ? 'Monday - Friday'
                     : selectedDays.map((d) => d.slice(0, 3)).join(', ')}
                 </strong>{' '}
@@ -1268,7 +1271,7 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
 
         <Button
           onClick={() => {
-            if (currentStep < 3) {
+            if (currentStep < LOCAL_FORM_STEPS) {
               setCurrentStep(currentStep + 1);
             } else {
               handleComplete();
@@ -1277,8 +1280,8 @@ export function SalesAgentConfig({ onComplete, onBack }: SalesAgentConfigProps) 
           disabled={!canProceed()}
           className="gap-2"
         >
-          {currentStep === 3 ? 'Create Agent' : 'Continue'}
-          {currentStep < 3 && <ChevronRight className="h-4 w-4" />}
+          {currentStep === LOCAL_FORM_STEPS ? 'Continue to Agent Setup' : 'Continue'}
+          {currentStep < LOCAL_FORM_STEPS && <ChevronRight className="h-4 w-4" />}
         </Button>
       </div>
     </div>

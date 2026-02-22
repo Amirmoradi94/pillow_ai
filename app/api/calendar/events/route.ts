@@ -24,6 +24,7 @@ function buildSalesSpecificEvents(
   if (schedule?.type !== 'custom' || schedule?.customMode !== 'specific') return [];
 
   const timezone = schedule?.timezone || 'UTC';
+  const slotDurationMinutes = Math.max(15, Number(schedule?.callIntervalMinutes || 15));
   const slots = Array.isArray(schedule?.specificDateTimes) ? schedule.specificDateTimes : [];
   if (!slots.length) return [];
 
@@ -38,7 +39,7 @@ function buildSalesSpecificEvents(
     .map((slot: any) => {
       const startLocal = `${slot.date}T${slot.time}:00`;
       const startUtc = fromZonedTime(startLocal, timezone);
-      const endUtc = new Date(startUtc.getTime() + 10 * 60 * 1000);
+      const endUtc = new Date(startUtc.getTime() + slotDurationMinutes * 60 * 1000);
       return {
         id: `sales-slot-${agentId}-${slot.date}-${slot.time}`,
         tenant_id: tenantId,
@@ -132,10 +133,16 @@ export async function GET(request: NextRequest) {
     }
 
     const { data: events, error } = await query;
-
-    if (error) {
+    const eventsTableUnavailable =
+      String(error?.message || '').includes("Could not find the table 'public.calendar_events'");
+    if (error && !eventsTableUnavailable) {
       throw error;
     }
+    const persistedEvents = eventsTableUnavailable ? [] : (events || []);
+
+    const hasPersistedTriggerEvents = (persistedEvents || []).some(
+      (event: any) => event?.metadata?.source === 'sales_outbound_trigger'
+    );
 
     let syntheticSalesEvents: any[] = [];
     if (agentId) {
@@ -146,7 +153,7 @@ export async function GET(request: NextRequest) {
         .eq('id', agentId)
         .maybeSingle();
 
-      if (agent?.settings) {
+      if (agent?.settings && !hasPersistedTriggerEvents) {
         syntheticSalesEvents = buildSalesSpecificEvents(
           agentId,
           userData.tenant_id,
@@ -158,8 +165,8 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      events: [...(events || []), ...syntheticSalesEvents],
-      total: (events?.length || 0) + syntheticSalesEvents.length,
+      events: [...persistedEvents, ...syntheticSalesEvents],
+      total: persistedEvents.length + syntheticSalesEvents.length,
     });
   } catch (error: any) {
     console.error('Events list error:', error);

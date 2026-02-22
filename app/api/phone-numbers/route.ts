@@ -37,7 +37,9 @@ export async function GET(request: NextRequest) {
     }
 
     const dbRows = dbNumbers || [];
-    const allowedNumbers = new Set(dbRows.map((row: any) => row.number));
+    const { data: claimedRows } = await supabase
+      .from('phone_numbers')
+      .select('number');
     const { data, error } = await listPhoneNumbers();
 
     if (error) {
@@ -54,28 +56,48 @@ export async function GET(request: NextRequest) {
 
     const remoteNumbers = Array.isArray(data)
       ? data
-      : (data as any)?.phone_numbers || (data as any)?.items || [];
+      : (data as any)?.phone_numbers || (data as any)?.items || (data as any)?.data || [];
 
-    const remoteByNumber = new Map(
-      (remoteNumbers || []).map((phone: any) => [phone.phone_number || phone.number, phone])
+    const remoteByNumber = new Map<string, any>(
+      (remoteNumbers || [])
+        .filter((phone: any) => Boolean(phone?.phone_number || phone?.number))
+        .map((phone: any) => [phone.phone_number || phone.number, phone])
     );
 
-    const merged = dbRows.map((row: any) => {
+    const dbMapped = dbRows.map((row: any) => {
       const remote = remoteByNumber.get(row.number);
-      if (remote) return remote;
+      if (remote) {
+        return {
+          ...remote,
+          status: row.status || remote.status || 'active',
+          inbound_agent_id: row.inbound_agent_id ?? remote.inbound_agent_id ?? null,
+          outbound_agent_id: row.outbound_agent_id ?? remote.outbound_agent_id ?? null,
+          owned: true,
+        };
+      }
       return {
         phone_number: row.number,
         phone_number_pretty: row.number,
         status: row.status || 'active',
         inbound_agent_id: row.inbound_agent_id || null,
         outbound_agent_id: row.outbound_agent_id || null,
+        owned: true,
       };
     });
 
-    const filtered = merged.filter((phone: any) =>
-      allowedNumbers.has(phone.phone_number || phone.number)
-    );
-    return NextResponse.json({ phoneNumbers: filtered });
+    const dbNumberSet = new Set(dbRows.map((row: any) => row.number));
+    const claimedNumberSet = new Set((claimedRows || []).map((row: any) => row.number));
+    const unmanagedRemote = (remoteNumbers || [])
+      .filter((phone: any) => {
+        const number = phone?.phone_number || phone?.number;
+        return number && !dbNumberSet.has(number) && !claimedNumberSet.has(number);
+      })
+      .map((phone: any) => ({
+        ...phone,
+        owned: false,
+      }));
+
+    return NextResponse.json({ phoneNumbers: [...dbMapped, ...unmanagedRemote] });
   } catch (error) {
     console.error('Error listing phone numbers:', error);
     return NextResponse.json(
@@ -140,6 +162,9 @@ export async function POST(request: NextRequest) {
     if (error) {
       const status = error.includes('card on file') ? 402 : 500;
       return NextResponse.json({ error }, { status });
+    }
+    if (!data?.phone_number) {
+      return NextResponse.json({ error: 'Failed to create phone number' }, { status: 500 });
     }
 
     const { error: insertError } = await supabase.from('phone_numbers').insert({

@@ -367,6 +367,21 @@ export default function NewAgentPage() {
       // Do not block agent creation if calendar setup fails; user can fix in Calendar page.
       let calendarSetupFailed = false;
       try {
+        const isOutbound = selectedTemplate.id === 'sales-agent-outbound';
+        const outboundSchedule = salesAgentConfig?.schedule;
+        const calendarTimezone = isOutbound
+          ? (outboundSchedule?.timezone || 'America/Toronto')
+          : agentCalendarTimezone;
+        const calendarDayStart = isOutbound
+          ? (outboundSchedule?.startTime || '09:00')
+          : agentCalendarStartTime;
+        const calendarDayEnd = isOutbound
+          ? (outboundSchedule?.endTime || '17:00')
+          : agentCalendarEndTime;
+        const calendarSlotDuration = isOutbound
+          ? Math.max(1, outboundSchedule?.callIntervalMinutes || 15)
+          : agentCalendarSlotDuration;
+
         const calendarSetupResponse = await fetch('/api/calendar/agent-calendars', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -374,10 +389,11 @@ export default function NewAgentPage() {
             agent_id: agentData.agent.id,
             calendar_provider_id: selectedCalendarProviderId,
             calendar_name: agentCalendarName,
-            timezone: agentCalendarTimezone,
-            day_start: agentCalendarStartTime,
-            day_end: agentCalendarEndTime,
-            slot_duration: agentCalendarSlotDuration,
+            timezone: calendarTimezone,
+            day_start: calendarDayStart,
+            day_end: calendarDayEnd,
+            slot_duration: calendarSlotDuration,
+            sales_schedule: isOutbound ? outboundSchedule : undefined,
           }),
         });
 
@@ -587,6 +603,33 @@ export default function NewAgentPage() {
         {/* Configuration Step */}
         {step === 'configure' && selectedTemplate && (
           <div className="space-y-6">
+            {selectedTemplate.id === 'sales-agent-outbound' && (
+              <div className="rounded-lg border bg-card p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {[1, 2, 3, 4].map((n) => (
+                      <div key={n} className="flex items-center">
+                        <div
+                          className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold ${
+                            n < 4
+                              ? 'bg-green-500 text-white'
+                              : 'bg-gradient-to-r from-purple-600 to-pink-600 text-white'
+                          }`}
+                        >
+                          {n < 4 ? '✓' : n}
+                        </div>
+                        {n < 4 && <div className="h-1 w-14 bg-green-500" />}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-sm text-muted-foreground">Step 4 of 4</div>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Final agent setup. Review settings and create your outbound agent.
+                </p>
+              </div>
+            )}
+
             <div className="rounded-lg border bg-card p-6">
               <div className="mb-4 flex items-center gap-3">
                 <span className="text-4xl">{selectedTemplate.icon}</span>
@@ -950,15 +993,7 @@ export default function NewAgentPage() {
                       </option>
                     ))}
                   </select>
-                  {calendarProviders.length === 0 ? (
-                    <p className="mt-1 text-xs text-amber-600">
-                      No connected calendars found. Connect one in{' '}
-                      <Link href="/dashboard/calendar" className="underline">
-                        Calendar Settings
-                      </Link>{' '}
-                      first.
-                    </p>
-                  ) : (
+                  {calendarProviders.length > 0 && (
                     <p className="mt-1 text-xs text-muted-foreground">
                       Uses Pillow Internal Calendar by default. Optional: choose Google/Outlook now or later.
                     </p>
@@ -975,63 +1010,92 @@ export default function NewAgentPage() {
                         placeholder="Downtown Branch Calendar"
                       />
                     </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Timezone</label>
-                      <select
-                        value={agentCalendarTimezone}
-                        onChange={(e) => setAgentCalendarTimezone(e.target.value)}
-                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                      >
-                        {CANADA_TIMEZONES.map((timezone) => (
-                          <option key={timezone.value} value={timezone.value}>
-                            {timezone.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Open Time</label>
-                      <input
-                        type="time"
-                        value={agentCalendarStartTime}
-                        onChange={(e) => setAgentCalendarStartTime(e.target.value)}
-                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Close Time</label>
-                      <input
-                        type="time"
-                        value={agentCalendarEndTime}
-                        onChange={(e) => setAgentCalendarEndTime(e.target.value)}
-                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Slot Duration (minutes)</label>
-                      <input
-                        type="number"
-                        min={5}
-                        step={5}
-                        value={agentCalendarSlotDuration}
-                        onChange={(e) => setAgentCalendarSlotDuration(parseInt(e.target.value || '30', 10))}
-                        className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                      />
-                    </div>
+                    {selectedTemplate.id !== 'sales-agent-outbound' && (
+                      <>
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-muted-foreground">Timezone</label>
+                          <select
+                            value={agentCalendarTimezone}
+                            onChange={(e) => setAgentCalendarTimezone(e.target.value)}
+                            className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                          >
+                            {CANADA_TIMEZONES.map((timezone) => (
+                              <option key={timezone.value} value={timezone.value}>
+                                {timezone.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-muted-foreground">Open Time</label>
+                          <input
+                            type="time"
+                            value={agentCalendarStartTime}
+                            onChange={(e) => setAgentCalendarStartTime(e.target.value)}
+                            className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-muted-foreground">Close Time</label>
+                          <input
+                            type="time"
+                            value={agentCalendarEndTime}
+                            onChange={(e) => setAgentCalendarEndTime(e.target.value)}
+                            className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-muted-foreground">Slot Duration (minutes)</label>
+                          <input
+                            type="number"
+                            min={5}
+                            step={5}
+                            value={agentCalendarSlotDuration}
+                            onChange={(e) => setAgentCalendarSlotDuration(parseInt(e.target.value || '30', 10))}
+                            className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                          />
+                        </div>
+                      </>
+                    )}
                   </div>
+                  {selectedTemplate.id === 'sales-agent-outbound' && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      For outbound agents, event timing is automatically generated from your sales schedule.
+                    </p>
+                  )}
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex gap-3 pt-4">
-                  <Button
-                    onClick={handleCreateAgent}
-                    disabled={loading || !selectedPhoneNumber}
-                    className="flex-1"
-                    size="lg"
-                  >
-                    {loading ? 'Creating Agent...' : 'Create Agent'}
-                  </Button>
-                </div>
+                {selectedTemplate.id === 'sales-agent-outbound' ? (
+                  <div className="flex items-center justify-between border-t pt-6">
+                    <Button
+                      variant="outline"
+                      onClick={() => setStep('sales-config')}
+                      disabled={loading}
+                      className="gap-2"
+                    >
+                      <ArrowLeft className="h-4 w-4" />
+                      Back
+                    </Button>
+                    <Button
+                      onClick={handleCreateAgent}
+                      disabled={loading || !selectedPhoneNumber}
+                    >
+                      {loading ? 'Creating Agent...' : 'Create Agent'}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex gap-3 pt-4">
+                    <Button
+                      onClick={handleCreateAgent}
+                      disabled={loading || !selectedPhoneNumber}
+                      className="flex-1"
+                      size="lg"
+                    >
+                      {loading ? 'Creating Agent...' : 'Create Agent'}
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1300,49 +1364,14 @@ export default function NewAgentPage() {
 
             {/* Content */}
             <div className="max-h-[500px] overflow-y-auto p-4">
-              {/* Purchase New Number */}
-              <div className="mb-6 rounded-lg border bg-muted/30 p-4">
-                <h3 className="mb-3 font-medium">Purchase New Number</h3>
-                <div className="space-y-3">
-                  <div>
-                    <label className="mb-1 block text-sm">Area Code (3 digits)</label>
-                    <input
-                      type="text"
-                      value={newPhoneAreaCode}
-                      onChange={(e) => setNewPhoneAreaCode(e.target.value.replace(/\D/g, '').slice(0, 3))}
-                      placeholder="e.g., 415"
-                      maxLength={3}
-                      className="w-full rounded-lg border px-3 py-2 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-sm">Nickname (optional)</label>
-                    <input
-                      type="text"
-                      value={newPhoneNickname}
-                      onChange={(e) => setNewPhoneNickname(e.target.value)}
-                      placeholder="e.g., Main Support Line"
-                      className="w-full rounded-lg border px-3 py-2 text-sm"
-                    />
-                  </div>
-                  <Button
-                    onClick={handlePurchasePhone}
-                    disabled={purchasingPhone || newPhoneAreaCode.length !== 3}
-                    className="w-full"
-                  >
-                    {purchasingPhone ? 'Purchasing...' : 'Purchase Number'}
-                  </Button>
-                </div>
-              </div>
-
               {/* Existing Numbers */}
-              <div>
+              <div className="mb-6">
                 <h3 className="mb-3 font-medium">Existing Numbers</h3>
                 {loadingPhoneNumbers ? (
                   <div className="py-8 text-center text-muted-foreground">Loading...</div>
                 ) : phoneNumbers.length === 0 ? (
                   <div className="py-8 text-center text-muted-foreground">
-                    No phone numbers available. Purchase one above.
+                    No phone numbers available.
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -1374,6 +1403,41 @@ export default function NewAgentPage() {
                     ))}
                   </div>
                 )}
+              </div>
+
+              {/* Purchase New Number */}
+              <div className="rounded-lg border bg-muted/30 p-4">
+                <h3 className="mb-3 font-medium">Purchase New Number</h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-sm">Area Code (3 digits)</label>
+                    <input
+                      type="text"
+                      value={newPhoneAreaCode}
+                      onChange={(e) => setNewPhoneAreaCode(e.target.value.replace(/\D/g, '').slice(0, 3))}
+                      placeholder="e.g., 415"
+                      maxLength={3}
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm">Nickname (optional)</label>
+                    <input
+                      type="text"
+                      value={newPhoneNickname}
+                      onChange={(e) => setNewPhoneNickname(e.target.value)}
+                      placeholder="e.g., Main Support Line"
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <Button
+                    onClick={handlePurchasePhone}
+                    disabled={purchasingPhone || newPhoneAreaCode.length !== 3}
+                    className="w-full"
+                  >
+                    {purchasingPhone ? 'Purchasing...' : 'Purchase Number'}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

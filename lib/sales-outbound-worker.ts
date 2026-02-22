@@ -61,7 +61,16 @@ type WorkerState = {
 
 const STATE_DIR = path.join(process.cwd(), 'data', 'sales', 'state');
 const STATE_FILE = path.join(STATE_DIR, 'outbound-worker.json');
-const DEFAULT_TIMEZONE = 'America/New_York';
+const CANADA_TIMEZONES = new Set([
+  'America/St_Johns',
+  'America/Halifax',
+  'America/Toronto',
+  'America/Winnipeg',
+  'America/Edmonton',
+  'America/Vancouver',
+  'America/Whitehorse',
+]);
+const DEFAULT_TIMEZONE = 'America/Toronto';
 
 const DAY_MAP = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
@@ -72,7 +81,7 @@ function parseTimeToMinutes(value: string): number {
 }
 
 function safeTimezone(input?: string): string {
-  if (!input) return DEFAULT_TIMEZONE;
+  if (!input || !CANADA_TIMEZONES.has(input)) return DEFAULT_TIMEZONE;
   try {
     Intl.DateTimeFormat('en-US', { timeZone: input });
     return input;
@@ -388,9 +397,32 @@ async function computeCallLimits(
   };
 }
 
+async function loadActiveTriggerEventAgents(
+  supabase: any,
+  now: Date
+): Promise<Set<string>> {
+  const windowStart = new Date(now.getTime() - 30 * 1000).toISOString();
+  const windowEnd = new Date(now.getTime() + 30 * 1000).toISOString();
+
+  const { data } = await supabase
+    .from('calendar_events')
+    .select('agent_id')
+    .eq('status', 'confirmed')
+    .eq('booked_by', 'voice_agent')
+    .gte('start_time', windowStart)
+    .lt('start_time', windowEnd)
+    .filter('metadata->>source', 'eq', 'sales_outbound_trigger');
+
+  const ids = (data || [])
+    .map((row: any) => row.agent_id)
+    .filter((id: any): id is string => typeof id === 'string' && id.length > 0);
+  return new Set(ids);
+}
+
 export async function runSalesOutboundWorker(now = new Date()) {
   const supabase = await createServiceClient();
   const state = await readState();
+  const activeTriggerAgentIds = await loadActiveTriggerEventAgents(supabase, now);
 
   const { data: agents, error } = await supabase
     .from('voice_agents')
@@ -429,7 +461,9 @@ export async function runSalesOutboundWorker(now = new Date()) {
 
     const timezone = safeTimezone(schedule.timezone);
     const processedSlots = state.processedSpecificSlotsByAgent[agent.id] || [];
-    const scheduleEval = evaluateSchedule(schedule, now, processedSlots);
+    const scheduleEval = schedule.type === 'custom' && activeTriggerAgentIds.has(agent.id)
+      ? { active: true }
+      : evaluateSchedule(schedule, now, processedSlots);
     if (!scheduleEval.active) {
       summary.skipped += 1;
       summary.details.push({ agentId: agent.id, action: 'skipped', reason: 'outside_schedule' });

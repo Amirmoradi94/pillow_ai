@@ -503,6 +503,32 @@ export default function AgentEditPage() {
         throw new Error(data.error || 'Failed to update agent');
       }
 
+      // Keep dedicated calendar + outbound trigger events in sync with updated schedule/settings.
+      try {
+        const outboundSchedule = mergedSalesConfig?.schedule;
+        const calendarTimezone = outboundSchedule?.timezone || 'America/Toronto';
+        const calendarDayStart = outboundSchedule?.startTime || '09:00';
+        const calendarDayEnd = outboundSchedule?.endTime || '17:00';
+        const calendarSlotDuration = Math.max(1, outboundSchedule?.callIntervalMinutes || 15);
+
+        await fetch('/api/calendar/agent-calendars', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agent_id: agentId,
+            calendar_provider_id: selectedCalendarProviderId || undefined,
+            calendar_name: `${name} Calendar`,
+            timezone: calendarTimezone,
+            day_start: calendarDayStart,
+            day_end: calendarDayEnd,
+            slot_duration: calendarSlotDuration,
+            sales_schedule: isOutboundSalesAgent ? outboundSchedule : undefined,
+          }),
+        });
+      } catch (calendarSyncError) {
+        console.error('Failed to sync calendar after agent update:', calendarSyncError);
+      }
+
       // Update phone number binding if changed
       if (selectedPhoneNumber && agent?.retell_agent_id) {
         try {
@@ -1192,7 +1218,7 @@ export default function AgentEditPage() {
                       <div>
                         <label className="mb-1 block text-xs font-medium text-muted-foreground">Type</label>
                         <select
-                          value={salesAgentConfig?.schedule?.type || 'weekly'}
+                          value={salesAgentConfig?.schedule?.type === 'daily' ? 'weekly' : (salesAgentConfig?.schedule?.type || 'weekly')}
                           onChange={(e) =>
                             setSalesAgentConfig((prev: any) => ({
                               ...(prev || {}),
@@ -1201,7 +1227,6 @@ export default function AgentEditPage() {
                           }
                           className="w-full rounded-lg border px-3 py-2 text-sm"
                         >
-                          <option value="daily">Daily</option>
                           <option value="weekly">Weekdays</option>
                           <option value="custom">Custom</option>
                         </select>
@@ -1220,49 +1245,74 @@ export default function AgentEditPage() {
                           className="w-full rounded-lg border px-3 py-2 text-sm"
                         />
                       </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-muted-foreground">Start Time</label>
-                        <input
-                          type="time"
-                          value={salesAgentConfig?.schedule?.startTime || '09:00'}
-                          onChange={(e) =>
-                            setSalesAgentConfig((prev: any) => ({
-                              ...(prev || {}),
-                              schedule: { ...(prev?.schedule || {}), startTime: e.target.value },
-                            }))
-                          }
-                          className="w-full rounded-lg border px-3 py-2 text-sm"
-                        />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-muted-foreground">End Time</label>
-                        <input
-                          type="time"
-                          value={salesAgentConfig?.schedule?.endTime || '17:00'}
-                          onChange={(e) =>
-                            setSalesAgentConfig((prev: any) => ({
-                              ...(prev || {}),
-                              schedule: { ...(prev?.schedule || {}), endTime: e.target.value },
-                            }))
-                          }
-                          className="w-full rounded-lg border px-3 py-2 text-sm"
-                        />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-muted-foreground">Gap Between Calls (minutes)</label>
-                        <input
-                          type="number"
-                          min="1"
-                          value={salesAgentConfig?.schedule?.callIntervalMinutes ?? 15}
-                          onChange={(e) =>
-                            setSalesAgentConfig((prev: any) => ({
-                              ...(prev || {}),
-                              schedule: { ...(prev?.schedule || {}), callIntervalMinutes: parseInt(e.target.value || '15', 10) },
-                            }))
-                          }
-                          className="w-full rounded-lg border px-3 py-2 text-sm"
-                        />
-                      </div>
+                      {salesAgentConfig?.schedule?.type === 'custom' && (
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-muted-foreground">Custom Mode</label>
+                          <select
+                            value={salesAgentConfig?.schedule?.customMode || 'pattern'}
+                            onChange={(e) =>
+                              setSalesAgentConfig((prev: any) => ({
+                                ...(prev || {}),
+                                schedule: { ...(prev?.schedule || {}), customMode: e.target.value },
+                              }))
+                            }
+                            className="w-full rounded-lg border px-3 py-2 text-sm"
+                          >
+                            <option value="pattern">Pattern</option>
+                            <option value="specific">Specific Date & Time</option>
+                          </select>
+                        </div>
+                      )}
+
+                      {(salesAgentConfig?.schedule?.type !== 'custom' ||
+                        (salesAgentConfig?.schedule?.customMode || 'pattern') === 'pattern') && (
+                        <>
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-muted-foreground">Start Time</label>
+                            <input
+                              type="time"
+                              value={salesAgentConfig?.schedule?.startTime || '09:00'}
+                              onChange={(e) =>
+                                setSalesAgentConfig((prev: any) => ({
+                                  ...(prev || {}),
+                                  schedule: { ...(prev?.schedule || {}), startTime: e.target.value },
+                                }))
+                              }
+                              className="w-full rounded-lg border px-3 py-2 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-muted-foreground">End Time</label>
+                            <input
+                              type="time"
+                              value={salesAgentConfig?.schedule?.endTime || '17:00'}
+                              onChange={(e) =>
+                                setSalesAgentConfig((prev: any) => ({
+                                  ...(prev || {}),
+                                  schedule: { ...(prev?.schedule || {}), endTime: e.target.value },
+                                }))
+                              }
+                              className="w-full rounded-lg border px-3 py-2 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-muted-foreground">Gap Between Calls (minutes)</label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={salesAgentConfig?.schedule?.callIntervalMinutes ?? 15}
+                              onChange={(e) =>
+                                setSalesAgentConfig((prev: any) => ({
+                                  ...(prev || {}),
+                                  schedule: { ...(prev?.schedule || {}), callIntervalMinutes: parseInt(e.target.value || '15', 10) },
+                                }))
+                              }
+                              className="w-full rounded-lg border px-3 py-2 text-sm"
+                            />
+                          </div>
+                        </>
+                      )}
+
                       <div>
                         <label className="mb-1 block text-xs font-medium text-muted-foreground">Max Calls Per Day</label>
                         <input
@@ -1279,9 +1329,41 @@ export default function AgentEditPage() {
                         />
                       </div>
                     </div>
-                    <div className="mt-3 text-xs text-muted-foreground">
-                      Saved custom slots: {Array.isArray(salesAgentConfig?.schedule?.specificDateTimes) ? salesAgentConfig.schedule.specificDateTimes.length : 0}
-                    </div>
+                    {salesAgentConfig?.schedule?.type === 'custom' &&
+                      (salesAgentConfig?.schedule?.customMode || 'pattern') === 'specific' && (
+                        <div className="mt-3 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
+                          <div className="mb-1 font-medium text-foreground">Specific Date & Time Slots</div>
+                          {Array.isArray(salesAgentConfig?.schedule?.specificDateTimes) &&
+                          salesAgentConfig.schedule.specificDateTimes.length > 0 ? (
+                            <div className="space-y-1">
+                              {salesAgentConfig.schedule.specificDateTimes.map((slot: any, idx: number) => (
+                                <div key={`${slot?.date || 'd'}-${slot?.time || 't'}-${idx}`}>
+                                  {slot?.date || 'No date'} at {slot?.time || 'No time'}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div>No specific slots saved.</div>
+                          )}
+                        </div>
+                      )}
+
+                    {salesAgentConfig?.schedule?.type === 'custom' &&
+                      (salesAgentConfig?.schedule?.customMode || 'pattern') === 'pattern' && (
+                        <div className="mt-3 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
+                          <div>
+                            First Call Date: <strong>{salesAgentConfig?.schedule?.customStartDate || 'Not set'}</strong>
+                          </div>
+                          <div>
+                            Recurrence:{' '}
+                            <strong>
+                              {salesAgentConfig?.schedule?.recurrence?.enabled
+                                ? `Every ${salesAgentConfig?.schedule?.recurrence?.interval || 1} ${salesAgentConfig?.schedule?.recurrence?.unit || 'week'}(s)`
+                                : 'One-time'}
+                            </strong>
+                          </div>
+                        </div>
+                      )}
                   </div>
                 </div>
               </div>

@@ -80,7 +80,7 @@ export async function PATCH(
       return NextResponse.json({ error: 'User profile not found' }, { status: 400 });
     }
 
-    const { data: existing } = await supabase
+    let { data: existing } = await supabase
       .from('phone_numbers')
       .select('id')
       .eq('tenant_id', user.tenantId)
@@ -88,7 +88,31 @@ export async function PATCH(
       .single();
 
     if (!existing?.id) {
-      return NextResponse.json({ error: 'Phone number not found' }, { status: 404 });
+      // Number exists in Retell but wasn't tracked in tenant DB yet: claim it lazily.
+      const { data: remotePhone, error: remoteError } = await getPhoneNumber(phoneNumber);
+      if (remoteError || !remotePhone) {
+        return NextResponse.json({ error: 'Phone number not found' }, { status: 404 });
+      }
+
+      const { data: inserted, error: insertError } = await supabase
+        .from('phone_numbers')
+        .insert({
+          tenant_id: user.tenantId,
+          number: phoneNumber,
+          status: remotePhone.status || 'active',
+          source: 'retell_sync',
+          created_by: internalUserId,
+          inbound_agent_id: remotePhone.inbound_agent_id ?? null,
+          outbound_agent_id: remotePhone.outbound_agent_id ?? null,
+          agent_id: null,
+        })
+        .select('id')
+        .single();
+
+      if (insertError || !inserted?.id) {
+        return NextResponse.json({ error: 'Failed to claim phone number ownership' }, { status: 500 });
+      }
+      existing = inserted;
     }
 
     const { data, error } = await updatePhoneNumber(phoneNumber, {

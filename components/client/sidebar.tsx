@@ -60,7 +60,7 @@ export function ClientSidebar() {
             <Link
               key={item.name}
               href={item.href}
-              className={`group relative flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all duration-300 ${
+              className={`group relative flex items-center gap-3 rounded-xl px-4 py-3 text-base font-medium transition-all duration-300 ${
                 isActive
                   ? 'text-white'
                   : 'text-foreground hover:text-primary hover:shadow-card'
